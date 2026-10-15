@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
 } from "react";
 
 import { calculateWorkforce } from "./calculations/erlangC";
@@ -55,6 +56,16 @@ interface SummaryCardProps {
   helper: string;
   accentColor?: string;
   valueColor?: string;
+}
+
+interface StaticNumberInputProps {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  allowDecimal?: boolean;
+  style?: CSSProperties;
+  ariaLabel?: string;
 }
 
 type EditableIntervalField =
@@ -114,7 +125,11 @@ function parseCsvLine(line: string) {
     const character = line[index];
     const nextCharacter = line[index + 1];
 
-    if (character === '"' && insideQuotes && nextCharacter === '"') {
+    if (
+      character === '"' &&
+      insideQuotes &&
+      nextCharacter === '"'
+    ) {
       currentValue += '"';
       index += 1;
     } else if (character === '"') {
@@ -400,8 +415,7 @@ function App() {
       },
     ]);
 
-    setCsvMessage("");
-    setCsvError("");
+    clearCsvMessages();
   }
 
   function removeInterval(id: number) {
@@ -409,8 +423,7 @@ function App() {
       currentIntervals.filter((row) => row.id !== id)
     );
 
-    setCsvMessage("");
-    setCsvError("");
+    clearCsvMessages();
   }
 
   function resetIntervals() {
@@ -425,6 +438,11 @@ function App() {
     setCsvError("");
   }
 
+  function clearCsvMessages() {
+    setCsvMessage("");
+    setCsvError("");
+  }
+
   function openCsvImporter() {
     fileInputRef.current?.click();
   }
@@ -436,8 +454,7 @@ function App() {
       return;
     }
 
-    setCsvMessage("");
-    setCsvError("");
+    clearCsvMessages();
 
     const reader = new FileReader();
 
@@ -513,12 +530,8 @@ function App() {
               values[intervalIndex] ?? ""
             );
 
-            const forecastVolume = Number(
-              values[volumeIndex]
-            );
-
+            const forecastVolume = Number(values[volumeIndex]);
             const ahtSeconds = Number(values[ahtIndex]);
-
             const availableFTE = Number(
               values[availableFteIndex]
             );
@@ -558,12 +571,6 @@ function App() {
               availableFTE,
             };
           });
-
-        if (importedRows.length === 0) {
-          throw new Error(
-            "No valid interval rows were found in the CSV."
-          );
-        }
 
         importedRows.sort((firstRow, secondRow) =>
           firstRow.interval.localeCompare(secondRow.interval)
@@ -732,44 +739,46 @@ function App() {
     };
   }
 
-  const inputStyle = {
+  const inputStyle: CSSProperties = {
     width: "100%",
     minWidth: "90px",
-    padding: "11px",
+    height: "48px",
+    padding: "0 14px",
     color: theme.darkText,
     backgroundColor: theme.white,
     border: `1px solid ${theme.border}`,
-    borderRadius: "8px",
-    fontSize: "14px",
-    boxSizing: "border-box" as const,
+    borderRadius: "10px",
+    fontSize: "16px",
+    fontFamily: "inherit",
+    lineHeight: "48px",
+    boxSizing: "border-box",
     outlineColor: theme.primary,
   };
 
-  const assumptionInputStyle = {
+  const assumptionInputStyle: CSSProperties = {
     ...inputStyle,
     marginTop: "6px",
-    fontSize: "16px",
     backgroundColor: theme.paleBlue,
   };
 
-  const labelStyle = {
+  const labelStyle: CSSProperties = {
     display: "flex",
-    flexDirection: "column" as const,
+    flexDirection: "column",
     minWidth: 0,
   };
 
-  const labelTextStyle = {
+  const labelTextStyle: CSSProperties = {
     minHeight: "48px",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     color: theme.darkText,
-    textAlign: "center" as const,
+    textAlign: "center",
     fontWeight: 600,
     lineHeight: 1.3,
   };
 
-  const sectionStyle = {
+  const sectionStyle: CSSProperties = {
     marginBottom: "24px",
     padding: "24px",
     backgroundColor: theme.white,
@@ -823,7 +832,7 @@ function App() {
               right: "90px",
               width: "230px",
               height: "230px",
-              backgroundColor: "rgba(255, 255, 255, 0.08)",
+              backgroundColor: "rgba(255,255,255,0.08)",
               borderRadius: "50%",
             }}
           />
@@ -883,30 +892,27 @@ function App() {
                 Interval length in minutes
               </span>
 
-              <input
-                style={assumptionInputStyle}
-                type="number"
-                min="1"
+              <StaticNumberInput
                 value={intervalMinutes}
-                onChange={(event) =>
-                  setIntervalMinutes(Number(event.target.value))
-                }
+                min={1}
+                allowDecimal={false}
+                onChange={setIntervalMinutes}
+                style={assumptionInputStyle}
+                ariaLabel="Interval length in minutes"
               />
             </label>
 
             <label style={labelStyle}>
               <span style={labelTextStyle}>SLA target %</span>
 
-              <input
-                style={assumptionInputStyle}
-                type="number"
-                min="1"
-                max="99.9"
-                step="0.1"
+              <StaticNumberInput
                 value={targetSLA}
-                onChange={(event) =>
-                  setTargetSLA(Number(event.target.value))
-                }
+                min={1}
+                max={99.9}
+                allowDecimal
+                onChange={setTargetSLA}
+                style={assumptionInputStyle}
+                ariaLabel="SLA target percentage"
               />
             </label>
 
@@ -915,30 +921,27 @@ function App() {
                 Answer-time target in seconds
               </span>
 
-              <input
-                style={assumptionInputStyle}
-                type="number"
-                min="1"
+              <StaticNumberInput
                 value={answerTime}
-                onChange={(event) =>
-                  setAnswerTime(Number(event.target.value))
-                }
+                min={1}
+                allowDecimal={false}
+                onChange={setAnswerTime}
+                style={assumptionInputStyle}
+                ariaLabel="Answer-time target in seconds"
               />
             </label>
 
             <label style={labelStyle}>
               <span style={labelTextStyle}>Shrinkage %</span>
 
-              <input
-                style={assumptionInputStyle}
-                type="number"
-                min="0"
-                max="99.9"
-                step="0.1"
+              <StaticNumberInput
                 value={shrinkage}
-                onChange={(event) =>
-                  setShrinkage(Number(event.target.value))
-                }
+                min={0}
+                max={99.9}
+                allowDecimal
+                onChange={setShrinkage}
+                style={assumptionInputStyle}
+                ariaLabel="Shrinkage percentage"
               />
             </label>
 
@@ -947,16 +950,14 @@ function App() {
                 Maximum occupancy %
               </span>
 
-              <input
-                style={assumptionInputStyle}
-                type="number"
-                min="1"
-                max="99.9"
-                step="0.1"
+              <StaticNumberInput
                 value={maximumOccupancy}
-                onChange={(event) =>
-                  setMaximumOccupancy(Number(event.target.value))
-                }
+                min={1}
+                max={99.9}
+                allowDecimal
+                onChange={setMaximumOccupancy}
+                style={assumptionInputStyle}
+                ariaLabel="Maximum occupancy percentage"
               />
             </label>
           </div>
@@ -1086,8 +1087,11 @@ function App() {
                     <td style={tableCellStyle}>
                       <input
                         style={inputStyle}
-                        type="time"
+                        type="text"
+                        inputMode="numeric"
                         value={row.interval}
+                        placeholder="09:00"
+                        aria-label={`Interval time row ${index + 1}`}
                         onChange={(event) =>
                           updateInterval(
                             row.id,
@@ -1099,51 +1103,53 @@ function App() {
                     </td>
 
                     <td style={tableCellStyle}>
-                      <input
-                        style={inputStyle}
-                        type="number"
-                        min="0"
+                      <StaticNumberInput
                         value={row.forecastVolume}
-                        onChange={(event) =>
+                        min={0}
+                        allowDecimal={false}
+                        onChange={(value) =>
                           updateInterval(
                             row.id,
                             "forecastVolume",
-                            Number(event.target.value)
+                            value
                           )
                         }
+                        style={inputStyle}
+                        ariaLabel={`Forecast volume row ${index + 1}`}
                       />
                     </td>
 
                     <td style={tableCellStyle}>
-                      <input
-                        style={inputStyle}
-                        type="number"
-                        min="1"
+                      <StaticNumberInput
                         value={row.ahtSeconds}
-                        onChange={(event) =>
+                        min={1}
+                        allowDecimal
+                        onChange={(value) =>
                           updateInterval(
                             row.id,
                             "ahtSeconds",
-                            Number(event.target.value)
+                            value
                           )
                         }
+                        style={inputStyle}
+                        ariaLabel={`AHT seconds row ${index + 1}`}
                       />
                     </td>
 
                     <td style={tableCellStyle}>
-                      <input
-                        style={inputStyle}
-                        type="number"
-                        min="0"
-                        step="0.1"
+                      <StaticNumberInput
                         value={row.availableFTE}
-                        onChange={(event) =>
+                        min={0}
+                        allowDecimal
+                        onChange={(value) =>
                           updateInterval(
                             row.id,
                             "availableFTE",
-                            Number(event.target.value)
+                            value
                           )
                         }
+                        style={inputStyle}
+                        ariaLabel={`Available FTE row ${index + 1}`}
                       />
                     </td>
 
@@ -1276,12 +1282,20 @@ function App() {
                   <thead>
                     <tr style={tableHeaderRowStyle}>
                       <th style={tableHeaderStyle}>Interval</th>
-                      <th style={tableHeaderStyle}>Offered Load</th>
-                      <th style={tableHeaderStyle}>Productive</th>
-                      <th style={tableHeaderStyle}>Required FTE</th>
+                      <th style={tableHeaderStyle}>
+                        Offered Load
+                      </th>
+                      <th style={tableHeaderStyle}>
+                        Productive
+                      </th>
+                      <th style={tableHeaderStyle}>
+                        Required FTE
+                      </th>
                       <th style={tableHeaderStyle}>Available</th>
                       <th style={tableHeaderStyle}>Gap</th>
-                      <th style={tableHeaderStyle}>Occupancy</th>
+                      <th style={tableHeaderStyle}>
+                        Occupancy
+                      </th>
                       <th style={tableHeaderStyle}>SLA</th>
                       <th style={tableHeaderStyle}>Status</th>
                       <th style={tableHeaderStyle}>Risk</th>
@@ -1455,6 +1469,17 @@ function App() {
                     </strong>
                     .
                   </p>
+
+                  <p
+                    style={{
+                      marginBottom: 0,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    Hiring should only be considered if the
+                    deficit persists across multiple days or
+                    forecast cycles.
+                  </p>
                 </>
               ) : (
                 <p style={{ marginBottom: 0, lineHeight: 1.6 }}>
@@ -1485,6 +1510,59 @@ function App() {
         )}
       </div>
     </main>
+  );
+}
+
+function StaticNumberInput({
+  value,
+  onChange,
+  min = 0,
+  max,
+  allowDecimal = true,
+  style,
+  ariaLabel,
+}: StaticNumberInputProps) {
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const enteredValue = event.target.value;
+
+    const validPattern = allowDecimal
+      ? /^\d*\.?\d*$/
+      : /^\d*$/;
+
+    if (!validPattern.test(enteredValue)) {
+      return;
+    }
+
+    if (enteredValue === "") {
+      onChange(min);
+      return;
+    }
+
+    let numericValue = Number(enteredValue);
+
+    if (!Number.isFinite(numericValue)) {
+      return;
+    }
+
+    numericValue = Math.max(min, numericValue);
+
+    if (max !== undefined) {
+      numericValue = Math.min(max, numericValue);
+    }
+
+    onChange(numericValue);
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode={allowDecimal ? "decimal" : "numeric"}
+      value={String(value)}
+      onChange={handleChange}
+      autoComplete="off"
+      aria-label={ariaLabel}
+      style={style}
+    />
   );
 }
 
@@ -1678,38 +1756,38 @@ function MessageBox({
   );
 }
 
-const tableStyle = {
+const tableStyle: CSSProperties = {
   width: "100%",
   minWidth: "850px",
   overflow: "hidden",
-  borderCollapse: "separate" as const,
+  borderCollapse: "separate",
   borderSpacing: 0,
   border: `1px solid ${theme.border}`,
   borderRadius: "12px",
 };
 
-const tableHeaderRowStyle = {
+const tableHeaderRowStyle: CSSProperties = {
   color: theme.white,
   backgroundColor: theme.primary,
 };
 
-const tableHeaderStyle = {
+const tableHeaderStyle: CSSProperties = {
   padding: "14px 12px",
   color: theme.white,
   borderBottom: `1px solid ${theme.primaryDark}`,
-  textAlign: "left" as const,
+  textAlign: "left",
   fontSize: "13px",
   fontWeight: 700,
-  whiteSpace: "nowrap" as const,
+  whiteSpace: "nowrap",
 };
 
-const tableCellStyle = {
+const tableCellStyle: CSSProperties = {
   padding: "12px",
   color: theme.darkText,
   borderBottom: `1px solid ${theme.border}`,
-  textAlign: "left" as const,
+  textAlign: "left",
   fontSize: "14px",
-  whiteSpace: "nowrap" as const,
+  whiteSpace: "nowrap",
 };
 
 export default App;
