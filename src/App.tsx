@@ -1,9 +1,11 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 
 import { calculateWorkforce } from "./calculations/erlangC";
@@ -30,7 +32,6 @@ interface IntervalRow {
   id: number;
   interval: string;
   forecastVolume: number;
-  ahtSeconds: number;
   availableFTE: number;
 }
 
@@ -45,9 +46,14 @@ interface CalculatedInterval extends IntervalRow {
   riskLevel: "Low" | "Medium" | "High" | "Critical";
 }
 
-interface SectionHeadingProps {
-  title: string;
-  subtitle?: string;
+interface StaticNumberInputProps {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  allowDecimal?: boolean;
+  style?: CSSProperties;
+  ariaLabel: string;
 }
 
 interface SummaryCardProps {
@@ -58,150 +64,98 @@ interface SummaryCardProps {
   valueColor?: string;
 }
 
-interface StaticNumberInputProps {
-  value: number;
-  onChange: (value: number) => void;
-  min?: number;
-  max?: number;
-  allowDecimal?: boolean;
-  style?: CSSProperties;
-  ariaLabel?: string;
-}
-
 type EditableIntervalField =
   | "interval"
   | "forecastVolume"
-  | "ahtSeconds"
   | "availableFTE";
 
-const defaultIntervals: IntervalRow[] = [
-  {
-    id: 1,
-    interval: "09:00",
-    forecastVolume: 100,
-    ahtSeconds: 420,
-    availableFTE: 40,
-  },
-  {
-    id: 2,
-    interval: "09:30",
-    forecastVolume: 115,
-    ahtSeconds: 420,
-    availableFTE: 40,
-  },
-  {
-    id: 3,
-    interval: "10:00",
-    forecastVolume: 125,
-    ahtSeconds: 430,
-    availableFTE: 42,
-  },
-  {
-    id: 4,
-    interval: "10:30",
-    forecastVolume: 105,
-    ahtSeconds: 410,
-    availableFTE: 43,
-  },
+const initialIntervals: IntervalRow[] = [
+  { id: 1, interval: "09:00", forecastVolume: 100, availableFTE: 40 },
+  { id: 2, interval: "09:30", forecastVolume: 115, availableFTE: 40 },
+  { id: 3, interval: "10:00", forecastVolume: 125, availableFTE: 42 },
+  { id: 4, interval: "10:30", forecastVolume: 105, availableFTE: 43 },
 ];
 
 function createRowId(index = 0) {
-  return Date.now() + index + Math.floor(Math.random() * 1000);
-}
-
-function normalizeHeader(header: string) {
-  return header
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, "");
+  return Date.now() + index + Math.floor(Math.random() * 10000);
 }
 
 function parseCsvLine(line: string) {
   const values: string[] = [];
-  let currentValue = "";
+  let current = "";
   let insideQuotes = false;
 
   for (let index = 0; index < line.length; index += 1) {
     const character = line[index];
-    const nextCharacter = line[index + 1];
+    const next = line[index + 1];
 
-    if (
-      character === '"' &&
-      insideQuotes &&
-      nextCharacter === '"'
-    ) {
-      currentValue += '"';
+    if (character === '"' && insideQuotes && next === '"') {
+      current += '"';
       index += 1;
     } else if (character === '"') {
       insideQuotes = !insideQuotes;
     } else if (character === "," && !insideQuotes) {
-      values.push(currentValue.trim());
-      currentValue = "";
+      values.push(current.trim());
+      current = "";
     } else {
-      currentValue += character;
+      current += character;
     }
   }
 
-  values.push(currentValue.trim());
-
+  values.push(current.trim());
   return values;
 }
 
-function escapeCsvValue(value: string | number) {
-  const text = String(value);
-
-  if (
-    text.includes(",") ||
-    text.includes('"') ||
-    text.includes("\n")
-  ) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-
-  return text;
+function normalizeHeader(header: string) {
+  return header.trim().toLowerCase().replace(/[\s_-]+/g, "");
 }
 
 function normalizeInterval(value: string) {
-  const trimmedValue = value.trim();
+  const trimmed = value.trim();
+  const match24 = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
 
-  const twentyFourHourMatch = trimmedValue.match(
-    /^([01]?\d|2[0-3]):([0-5]\d)$/
-  );
-
-  if (twentyFourHourMatch) {
-    const hours = twentyFourHourMatch[1].padStart(2, "0");
-    const minutes = twentyFourHourMatch[2];
-
-    return `${hours}:${minutes}`;
+  if (match24) {
+    return `${match24[1].padStart(2, "0")}:${match24[2]}`;
   }
 
-  const twelveHourMatch = trimmedValue.match(
-    /^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i
-  );
+  const match12 = trimmed.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
 
-  if (twelveHourMatch) {
-    let hours = Number(twelveHourMatch[1]);
-    const minutes = twelveHourMatch[2];
-    const period = twelveHourMatch[3].toUpperCase();
+  if (match12) {
+    let hours = Number(match12[1]);
+    const minutes = match12[2];
+    const period = match12[3].toUpperCase();
 
     if (hours < 1 || hours > 12) {
       throw new Error(`Invalid interval time: ${value}`);
     }
 
-    if (period === "AM" && hours === 12) {
-      hours = 0;
-    }
-
-    if (period === "PM" && hours !== 12) {
-      hours += 12;
-    }
+    if (period === "AM" && hours === 12) hours = 0;
+    if (period === "PM" && hours !== 12) hours += 12;
 
     return `${String(hours).padStart(2, "0")}:${minutes}`;
   }
 
-  throw new Error(
-    `Invalid interval "${value}". Use HH:MM, such as 09:30.`
-  );
+  throw new Error(`Invalid interval "${value}". Use HH:MM, such as 09:30.`);
+}
+
+function escapeCsvValue(value: string | number) {
+  const text = String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadCsv(fileName: string, csvContent: string) {
+  const blob = new Blob([`\uFEFF${csvContent}`], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function App() {
@@ -210,21 +164,29 @@ function App() {
   const [intervalMinutes, setIntervalMinutes] = useState(30);
   const [targetSLA, setTargetSLA] = useState(80);
   const [answerTime, setAnswerTime] = useState(20);
+  const [ahtSeconds, setAhtSeconds] = useState(420);
   const [shrinkage, setShrinkage] = useState(30);
   const [maximumOccupancy, setMaximumOccupancy] = useState(85);
+  const [intervals, setIntervals] = useState<IntervalRow[]>(initialIntervals);
 
-  const [intervals, setIntervals] =
-    useState<IntervalRow[]>(defaultIntervals);
-
-  const [csvMessage, setCsvMessage] = useState("");
-  const [csvError, setCsvError] = useState("");
+  const [message, setMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [copilotQuestion, setCopilotQuestion] = useState("");
+  const [copilotResponse, setCopilotResponse] = useState(
+    "Select a quick action or ask a workforce question."
+  );
 
   const calculation = useMemo(() => {
     try {
-      const results: CalculatedInterval[] = intervals.map((row) => {
+      const completeRows = intervals.filter(
+        (row) => row.forecastVolume >= 0 && ahtSeconds > 0 && row.availableFTE >= 0
+      );
+
+      const results: CalculatedInterval[] = completeRows.map((row) => {
         const result = calculateWorkforce({
           forecastVolume: row.forecastVolume,
-          ahtSeconds: row.ahtSeconds,
+          ahtSeconds,
           intervalSeconds: intervalMinutes * 60,
           targetSLA: targetSLA / 100,
           answerTimeSeconds: answerTime,
@@ -239,36 +201,18 @@ function App() {
             : 0;
 
         let riskLevel: CalculatedInterval["riskLevel"] = "Low";
+        if (gapPercentage <= -0.15) riskLevel = "Critical";
+        else if (gapPercentage < -0.02) riskLevel = "High";
+        else if (result.occupancy >= maximumOccupancy / 100 - 0.03) riskLevel = "Medium";
 
-        if (gapPercentage <= -0.15) {
-          riskLevel = "Critical";
-        } else if (gapPercentage < -0.02) {
-          riskLevel = "High";
-        } else if (
-          result.occupancy >=
-          maximumOccupancy / 100 - 0.03
-        ) {
-          riskLevel = "Medium";
-        }
-
-        return {
-          ...row,
-          ...result,
-          riskLevel,
-        };
+        return { ...row, ...result, riskLevel };
       });
 
-      return {
-        results,
-        error: "",
-      };
+      return { results, error: "" };
     } catch (error) {
       return {
         results: [] as CalculatedInterval[],
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to calculate interval results.",
+        error: error instanceof Error ? error.message : "Unable to calculate interval results.",
       };
     }
   }, [
@@ -276,6 +220,7 @@ function App() {
     intervalMinutes,
     targetSLA,
     answerTime,
+    ahtSeconds,
     shrinkage,
     maximumOccupancy,
   ]);
@@ -283,51 +228,29 @@ function App() {
   const calculatedIntervals = calculation.results;
 
   const summary = useMemo(() => {
-    if (calculatedIntervals.length === 0) {
-      return null;
-    }
+    if (calculatedIntervals.length === 0) return null;
 
     const totalForecastVolume = calculatedIntervals.reduce(
       (total, row) => total + row.forecastVolume,
       0
     );
-
     const averageRequiredFTE =
-      calculatedIntervals.reduce(
-        (total, row) => total + row.requiredScheduledFTE,
-        0
-      ) / calculatedIntervals.length;
-
+      calculatedIntervals.reduce((total, row) => total + row.requiredScheduledFTE, 0) /
+      calculatedIntervals.length;
     const averageAvailableFTE =
-      calculatedIntervals.reduce(
-        (total, row) => total + row.availableFTE,
-        0
-      ) / calculatedIntervals.length;
-
+      calculatedIntervals.reduce((total, row) => total + row.availableFTE, 0) /
+      calculatedIntervals.length;
     const averageFTEGap =
-      calculatedIntervals.reduce(
-        (total, row) => total + row.fteGap,
-        0
-      ) / calculatedIntervals.length;
-
-    const peakInterval = calculatedIntervals.reduce(
-      (peak, row) =>
-        row.requiredScheduledFTE > peak.requiredScheduledFTE
-          ? row
-          : peak
+      calculatedIntervals.reduce((total, row) => total + row.fteGap, 0) /
+      calculatedIntervals.length;
+    const peakInterval = calculatedIntervals.reduce((peak, row) =>
+      row.requiredScheduledFTE > peak.requiredScheduledFTE ? row : peak
     );
-
-    const largestDeficitInterval = calculatedIntervals.reduce(
-      (largestDeficit, row) =>
-        row.fteGap < largestDeficit.fteGap
-          ? row
-          : largestDeficit
+    const largestDeficitInterval = calculatedIntervals.reduce((deficit, row) =>
+      row.fteGap < deficit.fteGap ? row : deficit
     );
-
     const atRiskIntervals = calculatedIntervals.filter(
-      (row) =>
-        row.riskLevel === "High" ||
-        row.riskLevel === "Critical"
+      (row) => row.riskLevel === "High" || row.riskLevel === "Critical"
     );
 
     return {
@@ -341,42 +264,27 @@ function App() {
     };
   }, [calculatedIntervals]);
 
+  function clearMessages() {
+    setMessage("");
+    setErrorMessage("");
+  }
+
   function updateInterval(
     id: number,
     field: EditableIntervalField,
     value: string | number
   ) {
-    setIntervals((currentIntervals) =>
-      currentIntervals.map((row) => {
-        if (row.id !== id) {
-          return row;
-        }
+    setIntervals((current) =>
+      current.map((row) => {
+        if (row.id !== id) return row;
 
         switch (field) {
           case "interval":
-            return {
-              ...row,
-              interval: String(value),
-            };
-
+            return { ...row, interval: String(value) };
           case "forecastVolume":
-            return {
-              ...row,
-              forecastVolume: Number(value),
-            };
-
-          case "ahtSeconds":
-            return {
-              ...row,
-              ahtSeconds: Number(value),
-            };
-
+            return { ...row, forecastVolume: Number(value) };
           case "availableFTE":
-            return {
-              ...row,
-              availableFTE: Number(value),
-            };
-
+            return { ...row, availableFTE: Number(value) };
           default:
             return row;
         }
@@ -385,62 +293,49 @@ function App() {
   }
 
   function addInterval() {
-    const lastInterval = intervals[intervals.length - 1];
+    const lastRow = intervals[intervals.length - 1];
     let nextTime = "09:00";
 
-    if (lastInterval) {
-      const [hours, minutes] = lastInterval.interval
-        .split(":")
-        .map(Number);
-
-      const totalMinutes =
-        hours * 60 + minutes + intervalMinutes;
-
-      const nextHours = Math.floor(totalMinutes / 60) % 24;
-      const nextMinutes = totalMinutes % 60;
-
-      nextTime = `${String(nextHours).padStart(2, "0")}:${String(
-        nextMinutes
-      ).padStart(2, "0")}`;
+    if (lastRow) {
+      const [hours, minutes] = lastRow.interval.split(":").map(Number);
+      if (Number.isFinite(hours) && Number.isFinite(minutes)) {
+        const totalMinutes = hours * 60 + minutes + intervalMinutes;
+        nextTime = `${String(Math.floor(totalMinutes / 60) % 24).padStart(2, "0")}:${String(
+          totalMinutes % 60
+        ).padStart(2, "0")}`;
+      }
     }
 
-    setIntervals((currentIntervals) => [
-      ...currentIntervals,
+    setIntervals((current) => [
+      ...current,
       {
         id: createRowId(),
         interval: nextTime,
         forecastVolume: 0,
-        ahtSeconds: 420,
         availableFTE: 0,
       },
     ]);
-
-    clearCsvMessages();
+    clearMessages();
   }
 
   function removeInterval(id: number) {
-    setIntervals((currentIntervals) =>
-      currentIntervals.filter((row) => row.id !== id)
-    );
-
-    clearCsvMessages();
+    setIntervals((current) => current.filter((row) => row.id !== id));
+    clearMessages();
   }
 
-  function resetIntervals() {
-    setIntervals(
-      defaultIntervals.map((row, index) => ({
+  function resetInputs() {
+    setIntervals((current) =>
+      current.map((row) => ({
         ...row,
-        id: createRowId(index),
+        forecastVolume: 0,
+        availableFTE: 0,
       }))
     );
-
-    setCsvMessage("Interval inputs were reset.");
-    setCsvError("");
-  }
-
-  function clearCsvMessages() {
-    setCsvMessage("");
-    setCsvError("");
+    setMessage(
+      "Forecast Volume and Available FTE were cleared. Interval times were retained."
+    );
+    setErrorMessage("");
+    setCopilotResponse("Enter new workforce data to generate an analysis.");
   }
 
   function openCsvImporter() {
@@ -449,153 +344,71 @@ function App() {
 
   function importCsv(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    if (!file) return;
 
-    if (!file) {
-      return;
-    }
-
-    clearCsvMessages();
-
+    clearMessages();
     const reader = new FileReader();
 
     reader.onload = () => {
       try {
-        const fileContents = String(reader.result ?? "")
-          .replace(/^\uFEFF/, "")
-          .trim();
+        const text = String(reader.result ?? "").replace(/^\uFEFF/, "").trim();
+        if (!text) throw new Error("The selected CSV file is empty.");
 
-        if (!fileContents) {
-          throw new Error("The selected CSV file is empty.");
-        }
-
-        const lines = fileContents
-          .split(/\r?\n/)
-          .filter((line) => line.trim() !== "");
-
+        const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
         if (lines.length < 2) {
-          throw new Error(
-            "The CSV must contain a header row and at least one data row."
-          );
+          throw new Error("The CSV must contain a header row and at least one data row.");
         }
 
         const headers = parseCsvLine(lines[0]).map(normalizeHeader);
-
         const intervalIndex = headers.findIndex((header) =>
           ["interval", "time", "intervaltime"].includes(header)
         );
-
         const volumeIndex = headers.findIndex((header) =>
-          [
-            "forecastvolume",
-            "volume",
-            "forecast",
-            "contacts",
-          ].includes(header)
+          ["forecastvolume", "volume", "forecast", "contacts"].includes(header)
+        );
+        const availableIndex = headers.findIndex((header) =>
+          ["availablefte", "fte", "availableagents", "staffing"].includes(header)
         );
 
-        const ahtIndex = headers.findIndex((header) =>
-          [
-            "ahtseconds",
-            "aht",
-            "averagehandletime",
-          ].includes(header)
-        );
-
-        const availableFteIndex = headers.findIndex((header) =>
-          [
-            "availablefte",
-            "fte",
-            "availableagents",
-            "staffing",
-          ].includes(header)
-        );
-
-        if (
-          intervalIndex === -1 ||
-          volumeIndex === -1 ||
-          ahtIndex === -1 ||
-          availableFteIndex === -1
-        ) {
+        if ([intervalIndex, volumeIndex, availableIndex].includes(-1)) {
           throw new Error(
-            "Required CSV columns: Interval, Forecast Volume, AHT Seconds, Available FTE."
+            "Required CSV columns: Interval, Forecast Volume, Available FTE."
           );
         }
 
-        const importedRows: IntervalRow[] = lines
-          .slice(1)
-          .map((line, index) => {
-            const values = parseCsvLine(line);
+        const importedRows: IntervalRow[] = lines.slice(1).map((line, index) => {
+          const values = parseCsvLine(line);
+          const interval = normalizeInterval(values[intervalIndex] ?? "");
+          const forecastVolume = Number(values[volumeIndex]);
+          const availableFTE = Number(values[availableIndex]);
 
-            const interval = normalizeInterval(
-              values[intervalIndex] ?? ""
-            );
+          if (!Number.isFinite(forecastVolume) || forecastVolume < 0) {
+            throw new Error(`Row ${index + 2}: Forecast Volume must be zero or greater.`);
+          }
+          if (!Number.isFinite(availableFTE) || availableFTE < 0) {
+            throw new Error(`Row ${index + 2}: Available FTE must be zero or greater.`);
+          }
 
-            const forecastVolume = Number(values[volumeIndex]);
-            const ahtSeconds = Number(values[ahtIndex]);
-            const availableFTE = Number(
-              values[availableFteIndex]
-            );
+          return {
+            id: createRowId(index),
+            interval,
+            forecastVolume,
+            availableFTE,
+          };
+        });
 
-            if (
-              !Number.isFinite(forecastVolume) ||
-              forecastVolume < 0
-            ) {
-              throw new Error(
-                `Row ${index + 2}: Forecast Volume must be zero or greater.`
-              );
-            }
-
-            if (
-              !Number.isFinite(ahtSeconds) ||
-              ahtSeconds <= 0
-            ) {
-              throw new Error(
-                `Row ${index + 2}: AHT Seconds must be greater than zero.`
-              );
-            }
-
-            if (
-              !Number.isFinite(availableFTE) ||
-              availableFTE < 0
-            ) {
-              throw new Error(
-                `Row ${index + 2}: Available FTE must be zero or greater.`
-              );
-            }
-
-            return {
-              id: createRowId(index),
-              interval,
-              forecastVolume,
-              ahtSeconds,
-              availableFTE,
-            };
-          });
-
-        importedRows.sort((firstRow, secondRow) =>
-          firstRow.interval.localeCompare(secondRow.interval)
-        );
-
+        importedRows.sort((first, second) => first.interval.localeCompare(second.interval));
         setIntervals(importedRows);
-
-        setCsvMessage(
-          `${importedRows.length} interval row${
-            importedRows.length === 1 ? "" : "s"
-          } imported successfully.`
-        );
+        setMessage(`${importedRows.length} interval row(s) imported successfully.`);
       } catch (error) {
-        setCsvError(
-          error instanceof Error
-            ? error.message
-            : "Unable to import the CSV file."
-        );
+        setErrorMessage(error instanceof Error ? error.message : "Unable to import the CSV file.");
       } finally {
         event.target.value = "";
       }
     };
 
     reader.onerror = () => {
-      setCsvError("The selected CSV file could not be read.");
+      setErrorMessage("The selected CSV file could not be read.");
       event.target.value = "";
     };
 
@@ -603,388 +416,230 @@ function App() {
   }
 
   function exportInputsCsv() {
-    const header = [
-      "Interval",
-      "Forecast Volume",
-      "AHT Seconds",
-      "Available FTE",
+    const rows: Array<Array<string | number>> = [
+      ["Interval", "Forecast Volume", "Available FTE"],
+      ...intervals.map((row) => [
+        row.interval,
+        row.forecastVolume,
+        row.availableFTE,
+      ]),
     ];
-
-    const rows = intervals.map((row) => [
-      row.interval,
-      row.forecastVolume,
-      row.ahtSeconds,
-      row.availableFTE,
-    ]);
 
     downloadCsv(
       "wfm-interval-inputs.csv",
-      [header, ...rows]
-        .map((row) => row.map(escapeCsvValue).join(","))
-        .join("\n")
+      rows.map((row) => row.map(escapeCsvValue).join(",")).join("\n")
     );
-
-    setCsvMessage("Input data was exported successfully.");
-    setCsvError("");
+    setMessage("Input data was exported successfully.");
+    setErrorMessage("");
   }
 
   function exportResultsCsv() {
     if (calculatedIntervals.length === 0) {
-      setCsvError(
-        "There are no calculated interval results to export."
-      );
-      setCsvMessage("");
+      setErrorMessage("There are no completed interval results to export.");
+      setMessage("");
       return;
     }
 
-    const header = [
-      "Interval",
-      "Forecast Volume",
-      "AHT Seconds",
-      "Available FTE",
-      "Offered Load",
-      "Required Productive Agents",
-      "Required Scheduled FTE",
-      "FTE Gap",
-      "Occupancy Percent",
-      "Projected SLA Percent",
-      "Capacity Status",
-      "Risk Level",
+    const rows: Array<Array<string | number>> = [
+      [
+        "Interval",
+        "Forecast Volume",
+        "AHT Seconds",
+        "Available FTE",
+        "Offered Load",
+        "Required Productive Agents",
+        "Required Scheduled FTE",
+        "FTE Gap",
+        "Occupancy Percent",
+        "Projected SLA Percent",
+        "Capacity Status",
+        "Risk Level",
+      ],
+      ...calculatedIntervals.map((row) => [
+        row.interval,
+        row.forecastVolume,
+        ahtSeconds,
+        row.availableFTE.toFixed(2),
+        row.offeredLoad.toFixed(2),
+        row.requiredProductiveAgents,
+        row.requiredScheduledFTE.toFixed(2),
+        row.fteGap.toFixed(2),
+        (row.occupancy * 100).toFixed(1),
+        (row.projectedSLA * 100).toFixed(1),
+        row.capacityStatus,
+        row.riskLevel,
+      ]),
     ];
-
-    const rows = calculatedIntervals.map((row) => [
-      row.interval,
-      row.forecastVolume,
-      row.ahtSeconds,
-      row.availableFTE.toFixed(2),
-      row.offeredLoad.toFixed(2),
-      row.requiredProductiveAgents,
-      row.requiredScheduledFTE.toFixed(2),
-      row.fteGap.toFixed(2),
-      (row.occupancy * 100).toFixed(1),
-      (row.projectedSLA * 100).toFixed(1),
-      row.capacityStatus,
-      row.riskLevel,
-    ]);
 
     downloadCsv(
       "wfm-capacity-results.csv",
-      [header, ...rows]
-        .map((row) => row.map(escapeCsvValue).join(","))
-        .join("\n")
+      rows.map((row) => row.map(escapeCsvValue).join(",")).join("\n")
     );
-
-    setCsvMessage("Calculated results were exported successfully.");
-    setCsvError("");
+    setMessage("Calculated results were exported successfully.");
+    setErrorMessage("");
   }
 
-  function downloadCsv(fileName: string, csvContent: string) {
-    const blob = new Blob([`\uFEFF${csvContent}`], {
-      type: "text/csv;charset=utf-8;",
-    });
+  function generateLocalCopilotAnalysis(request: string) {
+    if (!summary) {
+      setCopilotResponse(
+        "No completed interval data is available. Enter Forecast Volume and Available FTE."
+      );
+      return;
+    }
 
-    const downloadUrl = URL.createObjectURL(blob);
-    const downloadLink = document.createElement("a");
+    const query = request.toLowerCase();
 
-    downloadLink.href = downloadUrl;
-    downloadLink.download = fileName;
-    downloadLink.style.display = "none";
+    if (query.includes("risk") || query.includes("critical") || query.includes("interval")) {
+      if (summary.atRiskIntervals.length === 0) {
+        setCopilotResponse(
+          "No high or critical intervals are identified. Continue monitoring volume, AHT, shrinkage, and staffing availability."
+        );
+      } else {
+        setCopilotResponse(
+          `There are ${summary.atRiskIntervals.length} high or critical intervals: ${summary.atRiskIntervals
+            .map((row) => row.interval)
+            .join(", ")}. The largest deficit is at ${
+            summary.largestDeficitInterval.interval
+          }, with a gap of ${summary.largestDeficitInterval.fteGap.toFixed(2)} FTE.`
+        );
+      }
+      return;
+    }
 
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
+    if (query.includes("action") || query.includes("recommend") || query.includes("overtime")) {
+      setCopilotResponse(
+        summary.atRiskIntervals.length > 0
+          ? `Recommended action: Reallocate capacity into ${summary.atRiskIntervals
+              .map((row) => row.interval)
+              .join(", ")}. Move flexible offline activities, use cross-skilled support, and consider targeted overtime. Hold hiring until the gap persists across multiple forecast cycles.`
+          : "Recommended action: Maintain the current staffing plan. No high or critical risks are identified."
+      );
+      return;
+    }
 
-    URL.revokeObjectURL(downloadUrl);
+    setCopilotResponse(
+      `Daily workforce position: Total forecast volume is ${summary.totalForecastVolume}. Average required staffing is ${summary.averageRequiredFTE.toFixed(
+        2
+      )} FTE compared with ${summary.averageAvailableFTE.toFixed(
+        2
+      )} available FTE. The average gap is ${summary.averageFTEGap.toFixed(
+        2
+      )} FTE. Peak staffing is required at ${summary.peakInterval.interval}.`
+    );
   }
 
-  function getStatusColors(status: string) {
-    if (status === "Understaffed") {
-      return {
-        color: theme.red,
-        background: theme.redBackground,
-      };
+  function submitCopilotQuestion() {
+    const question = copilotQuestion.trim();
+    if (!question) {
+      setCopilotResponse("Enter a workforce question before sending.");
+      return;
     }
-
-    if (status === "Overstaffed") {
-      return {
-        color: theme.primaryDark,
-        background: theme.paleBlue,
-      };
-    }
-
-    return {
-      color: theme.green,
-      background: theme.greenBackground,
-    };
+    generateLocalCopilotAnalysis(question);
+    setCopilotQuestion("");
   }
 
-  function getRiskColors(risk: string) {
-    if (risk === "Critical" || risk === "High") {
-      return {
-        color: theme.red,
-        background: theme.redBackground,
-      };
-    }
-
-    if (risk === "Medium") {
-      return {
-        color: theme.amber,
-        background: theme.amberBackground,
-      };
-    }
-
-    return {
-      color: theme.green,
-      background: theme.greenBackground,
-    };
+  function statusColors(status: CalculatedInterval["capacityStatus"]) {
+    if (status === "Understaffed") return [theme.red, theme.redBackground];
+    if (status === "Overstaffed") return [theme.primaryDark, theme.paleBlue];
+    return [theme.green, theme.greenBackground];
   }
 
-  const inputStyle: CSSProperties = {
-    width: "100%",
-    minWidth: "90px",
-    height: "48px",
-    padding: "0 14px",
-    color: theme.darkText,
-    backgroundColor: theme.white,
-    border: `1px solid ${theme.border}`,
-    borderRadius: "10px",
-    fontSize: "16px",
-    fontFamily: "inherit",
-    lineHeight: "48px",
-    boxSizing: "border-box",
-    outlineColor: theme.primary,
-  };
-
-  const assumptionInputStyle: CSSProperties = {
-    ...inputStyle,
-    marginTop: "6px",
-    backgroundColor: theme.paleBlue,
-  };
-
-  const labelStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    minWidth: 0,
-  };
-
-  const labelTextStyle: CSSProperties = {
-    minHeight: "48px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: theme.darkText,
-    textAlign: "center",
-    fontWeight: 600,
-    lineHeight: 1.3,
-  };
-
-  const sectionStyle: CSSProperties = {
-    marginBottom: "24px",
-    padding: "24px",
-    backgroundColor: theme.white,
-    border: `1px solid ${theme.border}`,
-    borderRadius: "16px",
-    boxShadow: "0 6px 20px rgba(0, 111, 158, 0.07)",
-  };
+  function riskColors(risk: CalculatedInterval["riskLevel"]) {
+    if (risk === "Critical" || risk === "High") return [theme.red, theme.redBackground];
+    if (risk === "Medium") return [theme.amber, theme.amberBackground];
+    return [theme.green, theme.greenBackground];
+  }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: "32px 20px",
-        backgroundColor: theme.pageBackground,
-        color: theme.darkText,
-        fontFamily: "Arial, Helvetica, sans-serif",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: "1400px",
-          margin: "0 auto",
-        }}
-      >
-        <header
-          style={{
-            position: "relative",
-            overflow: "hidden",
-            marginBottom: "28px",
-            padding: "36px 42px",
-            color: theme.white,
-            backgroundColor: theme.primary,
-            borderRadius: "18px",
-            boxShadow:
-              "0 10px 30px rgba(0, 111, 158, 0.18)",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              inset: "0 0 0 auto",
-              width: "18px",
-              backgroundColor: theme.orange,
-            }}
-          />
-
-          <div
-            style={{
-              position: "absolute",
-              top: "-80px",
-              right: "90px",
-              width: "230px",
-              height: "230px",
-              backgroundColor: "rgba(255,255,255,0.08)",
-              borderRadius: "50%",
-            }}
-          />
-
+    <main style={styles.page}>
+      <div style={styles.container}>
+        <header style={styles.header}>
+          <div style={styles.headerAccent} />
+          <div style={styles.headerCircle} />
           <div style={{ position: "relative", zIndex: 1 }}>
-            <div
-              style={{
-                marginBottom: "12px",
-                fontSize: "13px",
-                fontWeight: 700,
-                letterSpacing: "1.8px",
-                textTransform: "uppercase",
-              }}
-            >
-              Workforce Management
-            </div>
-
-            <h1
-              style={{
-                margin: 0,
-                color: theme.white,
-                fontSize: "36px",
-                lineHeight: 1.15,
-              }}
-            >
-              Workforce Executive
-            </h1>
-
-            <p
-              style={{
-                margin: "12px 0 0",
-                color: theme.white,
-                fontSize: "18px",
-              }}
-            >
+            <div style={styles.eyebrow}>Workforce Management</div>
+            <h1 style={styles.title}>Workforce Executive</h1>
+            <p style={styles.headerSubtitle}>
               Daily Multi-Interval Capacity and Erlang C Planner
             </p>
           </div>
         </header>
 
-        <section style={sectionStyle}>
+        <section style={styles.section}>
           <SectionHeading
             title="Planning Assumptions"
             subtitle="Set the common service and staffing assumptions."
           />
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns:
-                "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "20px",
-            }}
-          >
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                Interval length in minutes
-              </span>
-
+          <div style={styles.assumptionGrid}>
+            <InputLabel text="Interval length in minutes">
               <StaticNumberInput
                 value={intervalMinutes}
                 min={1}
                 allowDecimal={false}
                 onChange={setIntervalMinutes}
-                style={assumptionInputStyle}
                 ariaLabel="Interval length in minutes"
+                style={styles.assumptionInput}
               />
-            </label>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>SLA target %</span>
-
+            </InputLabel>
+            <InputLabel text="SLA target %">
               <StaticNumberInput
                 value={targetSLA}
                 min={1}
                 max={99.9}
-                allowDecimal
                 onChange={setTargetSLA}
-                style={assumptionInputStyle}
                 ariaLabel="SLA target percentage"
+                style={styles.assumptionInput}
               />
-            </label>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                Answer-time target in seconds
-              </span>
-
+            </InputLabel>
+            <InputLabel text="Answer-time target in seconds">
               <StaticNumberInput
                 value={answerTime}
                 min={1}
                 allowDecimal={false}
                 onChange={setAnswerTime}
-                style={assumptionInputStyle}
                 ariaLabel="Answer-time target in seconds"
+                style={styles.assumptionInput}
               />
-            </label>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>Shrinkage %</span>
-
+            </InputLabel>
+            <InputLabel text="AHT in seconds">
+              <StaticNumberInput
+                value={ahtSeconds}
+                min={1}
+                onChange={setAhtSeconds}
+                ariaLabel="Average handle time in seconds"
+                style={styles.assumptionInput}
+              />
+            </InputLabel>
+            <InputLabel text="Shrinkage %">
               <StaticNumberInput
                 value={shrinkage}
                 min={0}
                 max={99.9}
-                allowDecimal
                 onChange={setShrinkage}
-                style={assumptionInputStyle}
                 ariaLabel="Shrinkage percentage"
+                style={styles.assumptionInput}
               />
-            </label>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                Maximum occupancy %
-              </span>
-
+            </InputLabel>
+            <InputLabel text="Maximum occupancy %">
               <StaticNumberInput
                 value={maximumOccupancy}
                 min={1}
                 max={99.9}
-                allowDecimal
                 onChange={setMaximumOccupancy}
-                style={assumptionInputStyle}
                 ariaLabel="Maximum occupancy percentage"
+                style={styles.assumptionInput}
               />
-            </label>
+            </InputLabel>
           </div>
         </section>
 
-        <section style={sectionStyle}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: "16px",
-              flexWrap: "wrap",
-            }}
-          >
+        <section style={styles.section}>
+          <div style={styles.toolbar}>
             <SectionHeading
               title="Daily Interval Inputs"
               subtitle="Import a CSV or enter workload and staffing manually."
             />
-
-            <div
-              style={{
-                display: "flex",
-                gap: "8px",
-                flexWrap: "wrap",
-              }}
-            >
+            <div style={styles.buttonGroup}>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -992,189 +647,80 @@ function App() {
                 onChange={importCsv}
                 style={{ display: "none" }}
               />
-
-              <ActionButton
-                label="Import CSV"
-                onClick={openCsvImporter}
-                variant="secondary"
-              />
-
-              <ActionButton
-                label="Export Inputs"
-                onClick={exportInputsCsv}
-                variant="secondary"
-              />
-
-              <ActionButton
-                label="Export Results"
-                onClick={exportResultsCsv}
-                variant="secondary"
-              />
-
-              <ActionButton
-                label="Reset"
-                onClick={resetIntervals}
-                variant="secondary"
-              />
-
-              <ActionButton
-                label="+ Add Interval"
-                onClick={addInterval}
-                variant="primary"
-              />
+              <ActionButton label="Import CSV" onClick={openCsvImporter} />
+              <ActionButton label="Export Inputs" onClick={exportInputsCsv} />
+              <ActionButton label="Export Results" onClick={exportResultsCsv} />
+              <ActionButton label="Reset" onClick={resetInputs} />
+              <ActionButton label="+ Add Interval" onClick={addInterval} primary />
             </div>
           </div>
 
-          <div
-            style={{
-              marginBottom: "18px",
-              padding: "12px 14px",
-              color: theme.mutedText,
-              backgroundColor: theme.paleBlue,
-              border: `1px solid ${theme.border}`,
-              borderRadius: "10px",
-              fontSize: "13px",
-              lineHeight: 1.5,
-            }}
-          >
-            Required CSV headers: <strong>Interval</strong>,{" "}
-            <strong>Forecast Volume</strong>,{" "}
-            <strong>AHT Seconds</strong>, and{" "}
-            <strong>Available FTE</strong>.
+          <div style={styles.helpBox}>
+            Reset clears Forecast Volume and Available FTE. Interval times, global AHT, and other
+            planning assumptions are retained.
           </div>
 
-          {csvMessage && (
-            <MessageBox
-              text={csvMessage}
-              color={theme.green}
-              background={theme.greenBackground}
-            />
-          )}
-
-          {csvError && (
-            <MessageBox
-              text={csvError}
-              color={theme.red}
-              background={theme.redBackground}
-            />
-          )}
+          {message && <MessageBox text={message} color={theme.green} background={theme.greenBackground} />}
+          {errorMessage && <MessageBox text={errorMessage} color={theme.red} background={theme.redBackground} />}
 
           <div style={{ overflowX: "auto" }}>
-            <table style={tableStyle}>
+            <table style={styles.table}>
               <thead>
-                <tr style={tableHeaderRowStyle}>
-                  <th style={tableHeaderStyle}>Interval</th>
-                  <th style={tableHeaderStyle}>
-                    Forecast Volume
-                  </th>
-                  <th style={tableHeaderStyle}>AHT Seconds</th>
-                  <th style={tableHeaderStyle}>Available FTE</th>
-                  <th style={tableHeaderStyle}>Action</th>
+                <tr style={styles.tableHeaderRow}>
+                  <th style={styles.th}>Interval</th>
+                  <th style={styles.th}>Forecast Volume</th>
+                  <th style={styles.th}>Available FTE</th>
+                  <th style={styles.th}>Action</th>
                 </tr>
               </thead>
-
               <tbody>
                 {intervals.map((row, index) => (
                   <tr
                     key={row.id}
-                    style={{
-                      backgroundColor:
-                        index % 2 === 0
-                          ? theme.white
-                          : theme.pageBackground,
-                    }}
+                    style={{ backgroundColor: index % 2 === 0 ? theme.white : theme.pageBackground }}
                   >
-                    <td style={tableCellStyle}>
+                    <td style={styles.td}>
                       <input
-                        style={inputStyle}
                         type="text"
                         inputMode="numeric"
                         value={row.interval}
+                        maxLength={5}
                         placeholder="09:00"
-                        aria-label={`Interval time row ${index + 1}`}
+                        aria-label={`Interval row ${index + 1}`}
                         onChange={(event) =>
-                          updateInterval(
-                            row.id,
-                            "interval",
-                            event.target.value
-                          )
+                          updateInterval(row.id, "interval", event.target.value)
                         }
+                        style={styles.input}
                       />
                     </td>
-
-                    <td style={tableCellStyle}>
+                    <td style={styles.td}>
                       <StaticNumberInput
                         value={row.forecastVolume}
                         min={0}
                         allowDecimal={false}
-                        onChange={(value) =>
-                          updateInterval(
-                            row.id,
-                            "forecastVolume",
-                            value
-                          )
-                        }
-                        style={inputStyle}
+                        onChange={(value) => updateInterval(row.id, "forecastVolume", value)}
                         ariaLabel={`Forecast volume row ${index + 1}`}
+                        style={styles.input}
                       />
                     </td>
-
-                    <td style={tableCellStyle}>
-                      <StaticNumberInput
-                        value={row.ahtSeconds}
-                        min={1}
-                        allowDecimal
-                        onChange={(value) =>
-                          updateInterval(
-                            row.id,
-                            "ahtSeconds",
-                            value
-                          )
-                        }
-                        style={inputStyle}
-                        ariaLabel={`AHT seconds row ${index + 1}`}
-                      />
-                    </td>
-
-                    <td style={tableCellStyle}>
+                    <td style={styles.td}>
                       <StaticNumberInput
                         value={row.availableFTE}
                         min={0}
-                        allowDecimal
-                        onChange={(value) =>
-                          updateInterval(
-                            row.id,
-                            "availableFTE",
-                            value
-                          )
-                        }
-                        style={inputStyle}
+                        onChange={(value) => updateInterval(row.id, "availableFTE", value)}
                         ariaLabel={`Available FTE row ${index + 1}`}
+                        style={styles.input}
                       />
                     </td>
-
-                    <td style={tableCellStyle}>
+                    <td style={styles.td}>
                       <button
                         type="button"
                         disabled={intervals.length === 1}
                         onClick={() => removeInterval(row.id)}
                         style={{
-                          padding: "9px 12px",
-                          color:
-                            intervals.length === 1
-                              ? "#98A2B3"
-                              : theme.red,
-                          backgroundColor:
-                            intervals.length === 1
-                              ? "#F2F4F7"
-                              : theme.redBackground,
-                          border: "1px solid #FECDCA",
-                          borderRadius: "8px",
-                          fontWeight: 600,
-                          cursor:
-                            intervals.length === 1
-                              ? "not-allowed"
-                              : "pointer",
+                          ...styles.removeButton,
+                          opacity: intervals.length === 1 ? 0.5 : 1,
+                          cursor: intervals.length === 1 ? "not-allowed" : "pointer",
                         }}
                       >
                         Remove
@@ -1195,195 +741,130 @@ function App() {
           />
         )}
 
+        {!summary && !calculation.error && (
+          <section style={styles.emptyState}>
+            <strong>No completed interval data</strong>
+            <p style={{ marginBottom: 0 }}>
+              Enter Forecast Volume and Available FTE to calculate staffing requirements. The global AHT
+              from Planning Assumptions applies to every interval.
+            </p>
+          </section>
+        )}
+
         {summary && (
           <>
             <section style={{ marginBottom: "24px" }}>
               <SectionHeading
                 title="Daily Capacity Summary"
-                subtitle="Executive rollup across all entered intervals."
+                subtitle="Executive rollup across completed intervals."
               />
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    "repeat(auto-fit, minmax(210px, 1fr))",
-                  gap: "16px",
-                }}
-              >
+              <div style={styles.summaryGrid}>
                 <SummaryCard
                   label="Total Forecast Volume"
                   value={summary.totalForecastVolume.toLocaleString()}
-                  helper="Across all intervals"
+                  helper="Across completed intervals"
                 />
-
                 <SummaryCard
                   label="Average Required FTE"
                   value={summary.averageRequiredFTE.toFixed(2)}
                   helper="Shrinkage adjusted"
                 />
-
                 <SummaryCard
                   label="Average Available FTE"
                   value={summary.averageAvailableFTE.toFixed(2)}
                   helper="Current interval staffing"
                 />
-
                 <SummaryCard
                   label="Average FTE Gap"
                   value={`${summary.averageFTEGap > 0 ? "+" : ""}${summary.averageFTEGap.toFixed(2)}`}
                   helper="Available minus required"
-                  valueColor={
-                    summary.averageFTEGap < 0
-                      ? theme.red
-                      : theme.green
-                  }
+                  valueColor={summary.averageFTEGap < 0 ? theme.red : theme.green}
                 />
-
                 <SummaryCard
                   label="Peak Interval"
                   value={summary.peakInterval.interval}
-                  helper={`${summary.peakInterval.requiredScheduledFTE.toFixed(
-                    2
-                  )} required FTE`}
+                  helper={`${summary.peakInterval.requiredScheduledFTE.toFixed(2)} required FTE`}
                 />
-
                 <SummaryCard
                   label="At-Risk Intervals"
                   value={String(summary.atRiskIntervals.length)}
                   helper="High or critical risk"
-                  accentColor={
-                    summary.atRiskIntervals.length > 0
-                      ? theme.orange
-                      : theme.green
-                  }
-                  valueColor={
-                    summary.atRiskIntervals.length > 0
-                      ? theme.red
-                      : theme.green
-                  }
+                  accentColor={summary.atRiskIntervals.length > 0 ? theme.orange : theme.green}
+                  valueColor={summary.atRiskIntervals.length > 0 ? theme.red : theme.green}
                 />
               </div>
             </section>
 
-            <section style={sectionStyle}>
+            <section style={styles.section}>
               <SectionHeading
                 title="Interval Capacity Results"
                 subtitle="Calculated Erlang C staffing, occupancy, SLA, and risk."
               />
-
               <div style={{ overflowX: "auto" }}>
-                <table
-                  style={{
-                    ...tableStyle,
-                    minWidth: "1200px",
-                  }}
-                >
+                <table style={{ ...styles.table, minWidth: "1200px" }}>
                   <thead>
-                    <tr style={tableHeaderRowStyle}>
-                      <th style={tableHeaderStyle}>Interval</th>
-                      <th style={tableHeaderStyle}>
-                        Offered Load
-                      </th>
-                      <th style={tableHeaderStyle}>
-                        Productive
-                      </th>
-                      <th style={tableHeaderStyle}>
-                        Required FTE
-                      </th>
-                      <th style={tableHeaderStyle}>Available</th>
-                      <th style={tableHeaderStyle}>Gap</th>
-                      <th style={tableHeaderStyle}>
-                        Occupancy
-                      </th>
-                      <th style={tableHeaderStyle}>SLA</th>
-                      <th style={tableHeaderStyle}>Status</th>
-                      <th style={tableHeaderStyle}>Risk</th>
+                    <tr style={styles.tableHeaderRow}>
+                      {[
+                        "Interval",
+                        "Offered Load",
+                        "Productive",
+                        "Required FTE",
+                        "Available",
+                        "Gap",
+                        "Occupancy",
+                        "SLA",
+                        "Status",
+                        "Risk",
+                      ].map((heading) => (
+                        <th key={heading} style={styles.th}>
+                          {heading}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
-
                   <tbody>
                     {calculatedIntervals.map((row, index) => {
-                      const statusColors = getStatusColors(
-                        row.capacityStatus
-                      );
-
-                      const riskColors = getRiskColors(
-                        row.riskLevel
-                      );
+                      const [statusColor, statusBackground] = statusColors(row.capacityStatus);
+                      const [riskColor, riskBackground] = riskColors(row.riskLevel);
 
                       return (
                         <tr
                           key={row.id}
                           style={{
-                            backgroundColor:
-                              index % 2 === 0
-                                ? theme.white
-                                : theme.pageBackground,
+                            backgroundColor: index % 2 === 0 ? theme.white : theme.pageBackground,
                           }}
                         >
-                          <td style={tableCellStyle}>
-                            <strong
-                              style={{
-                                color: theme.primaryDark,
-                              }}
-                            >
-                              {row.interval}
-                            </strong>
+                          <td style={styles.td}>
+                            <strong style={{ color: theme.primaryDark }}>{row.interval}</strong>
                           </td>
-
-                          <td style={tableCellStyle}>
-                            {row.offeredLoad.toFixed(2)}
-                          </td>
-
-                          <td style={tableCellStyle}>
-                            {row.requiredProductiveAgents}
-                          </td>
-
-                          <td style={tableCellStyle}>
-                            {row.requiredScheduledFTE.toFixed(2)}
-                          </td>
-
-                          <td style={tableCellStyle}>
-                            {row.availableFTE.toFixed(2)}
-                          </td>
-
+                          <td style={styles.td}>{row.offeredLoad.toFixed(2)}</td>
+                          <td style={styles.td}>{row.requiredProductiveAgents}</td>
+                          <td style={styles.td}>{row.requiredScheduledFTE.toFixed(2)}</td>
+                          <td style={styles.td}>{row.availableFTE.toFixed(2)}</td>
                           <td
                             style={{
-                              ...tableCellStyle,
-                              color:
-                                row.fteGap < 0
-                                  ? theme.red
-                                  : theme.green,
+                              ...styles.td,
+                              color: row.fteGap < 0 ? theme.red : theme.green,
                               fontWeight: 700,
                             }}
                           >
                             {row.fteGap > 0 ? "+" : ""}
                             {row.fteGap.toFixed(2)}
                           </td>
-
-                          <td style={tableCellStyle}>
-                            {(row.occupancy * 100).toFixed(1)}%
-                          </td>
-
-                          <td style={tableCellStyle}>
-                            {(row.projectedSLA * 100).toFixed(1)}
-                            %
-                          </td>
-
-                          <td style={tableCellStyle}>
+                          <td style={styles.td}>{(row.occupancy * 100).toFixed(1)}%</td>
+                          <td style={styles.td}>{(row.projectedSLA * 100).toFixed(1)}%</td>
+                          <td style={styles.td}>
                             <StatusBadge
                               text={row.capacityStatus}
-                              color={statusColors.color}
-                              background={statusColors.background}
+                              color={statusColor}
+                              background={statusBackground}
                             />
                           </td>
-
-                          <td style={tableCellStyle}>
+                          <td style={styles.td}>
                             <StatusBadge
                               text={row.riskLevel}
-                              color={riskColors.color}
-                              background={riskColors.background}
+                              color={riskColor}
+                              background={riskBackground}
                             />
                           </td>
                         </tr>
@@ -1394,121 +875,151 @@ function App() {
               </div>
             </section>
 
-            <section
-              style={{
-                padding: "26px",
-                backgroundColor: theme.paleBlue,
-                border: `1px solid ${theme.border}`,
-                borderLeft: `9px solid ${theme.orange}`,
-                borderRadius: "16px",
-              }}
-            >
+            <section style={styles.executiveDecision}>
               <SectionHeading
                 title="Executive Decision"
                 subtitle="Recommended action based on current results."
               />
-
               {summary.atRiskIntervals.length > 0 ? (
                 <>
-                  <p style={{ lineHeight: 1.6 }}>
-                    <strong>
-                      {summary.atRiskIntervals.length}
-                    </strong>{" "}
-                    interval
-                    {summary.atRiskIntervals.length > 1
-                      ? "s are"
-                      : " is"}{" "}
-                    classified as high or critical risk.
+                  <p style={styles.decisionText}>
+                    <strong>{summary.atRiskIntervals.length}</strong> interval
+                    {summary.atRiskIntervals.length > 1 ? "s are" : " is"} classified as high or
+                    critical risk.
                   </p>
-
-                  <p style={{ lineHeight: 1.6 }}>
-                    Prioritize capacity reallocation, schedule
-                    optimization, movement of flexible offline
-                    activities, cross-skilling, and targeted
-                    overtime during:
+                  <p style={styles.decisionText}>
+                    Prioritize reallocation, schedule optimization, movement of flexible offline
+                    work, cross-skilling, and targeted overtime during:
                   </p>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "8px",
-                      margin: "16px 0",
-                      flexWrap: "wrap",
-                    }}
-                  >
+                  <div style={styles.riskBadgeRow}>
                     {summary.atRiskIntervals.map((row) => (
                       <span
                         key={row.id}
                         style={{
-                          padding: "7px 12px",
-                          color: theme.white,
-                          backgroundColor:
-                            row.riskLevel === "Critical"
-                              ? theme.red
-                              : theme.orange,
-                          borderRadius: "999px",
-                          fontWeight: 700,
+                          ...styles.riskIntervalBadge,
+                          backgroundColor: row.riskLevel === "Critical" ? theme.red : theme.orange,
                         }}
                       >
                         {row.interval}
                       </span>
                     ))}
                   </div>
-
-                  <p style={{ lineHeight: 1.6 }}>
-                    The largest deficit is at{" "}
-                    <strong>
-                      {summary.largestDeficitInterval.interval}
-                    </strong>
-                    , with a staffing gap of{" "}
+                  <p style={styles.decisionText}>
+                    The largest deficit is at <strong>{summary.largestDeficitInterval.interval}</strong>,
+                    with a staffing gap of{" "}
                     <strong style={{ color: theme.red }}>
-                      {summary.largestDeficitInterval.fteGap.toFixed(
-                        2
-                      )}{" "}
-                      FTE
+                      {summary.largestDeficitInterval.fteGap.toFixed(2)} FTE
                     </strong>
                     .
                   </p>
-
-                  <p
-                    style={{
-                      marginBottom: 0,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    Hiring should only be considered if the
-                    deficit persists across multiple days or
-                    forecast cycles.
-                  </p>
                 </>
               ) : (
-                <p style={{ marginBottom: 0, lineHeight: 1.6 }}>
-                  No high or critical capacity risks are
-                  identified. Maintain the existing staffing plan
-                  and continue monitoring actual volume, AHT,
-                  shrinkage, and intraday availability.
+                <p style={styles.decisionText}>
+                  No high or critical risks are identified. Maintain the current staffing plan and
+                  continue monitoring volume, AHT, shrinkage, and intraday availability.
                 </p>
               )}
             </section>
-
-            <footer
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: "12px",
-                marginTop: "24px",
-                padding: "18px 4px",
-                color: theme.mutedText,
-                fontSize: "13px",
-                flexWrap: "wrap",
-              }}
-            >
-              <span>Workforce Executive Capacity Planner</span>
-              <span>Code calculates. Copilot interprets.</span>
-            </footer>
           </>
         )}
       </div>
+
+      <button
+        type="button"
+        onClick={() => setCopilotOpen(true)}
+        aria-label="Open Workforce Copilot"
+        style={styles.copilotFloatingButton}
+      >
+        <span aria-hidden="true">✨</span>
+        Workforce Copilot
+      </button>
+
+      {copilotOpen && (
+        <>
+          <button
+            type="button"
+            onClick={() => setCopilotOpen(false)}
+            aria-label="Close Workforce Copilot"
+            style={styles.copilotOverlay}
+          />
+          <aside aria-label="Workforce Copilot" style={styles.copilotPanel}>
+            <div style={styles.copilotHeader}>
+              <div>
+                <div style={styles.copilotEyebrow}>AI Workforce Advisor</div>
+                <strong style={{ fontSize: "20px" }}>Workforce Copilot</strong>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCopilotOpen(false)}
+                aria-label="Close Workforce Copilot"
+                style={styles.copilotCloseButton}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={styles.copilotBody}>
+              <p style={styles.copilotDescription}>
+                This preview interprets the verified workforce calculations displayed in the
+                dashboard.
+              </p>
+              <div style={styles.copilotActions}>
+                <CopilotQuickAction
+                  label="Analyze daily capacity"
+                  onClick={() => generateLocalCopilotAnalysis("Analyze daily capacity")}
+                />
+                <CopilotQuickAction
+                  label="Identify critical intervals"
+                  onClick={() => generateLocalCopilotAnalysis("Identify critical interval risks")}
+                />
+                <CopilotQuickAction
+                  label="Recommend operational actions"
+                  onClick={() =>
+                    generateLocalCopilotAnalysis("Recommend immediate operational actions")
+                  }
+                />
+              </div>
+              <div role="status" aria-live="polite" style={styles.copilotResponse}>
+                {copilotResponse}
+              </div>
+            </div>
+
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                submitCopilotQuestion();
+              }}
+              style={styles.copilotForm}
+            >
+              <label htmlFor="copilot-question" style={styles.copilotQuestionLabel}>
+                Ask Workforce Copilot
+              </label>
+              <div style={styles.copilotQuestionRow}>
+                <input
+                  id="copilot-question"
+                  type="text"
+                  value={copilotQuestion}
+                  placeholder="Explain today's staffing risk..."
+                  autoComplete="off"
+                  onChange={(event) => setCopilotQuestion(event.target.value)}
+                  style={styles.copilotQuestionInput}
+                />
+                <button
+                  type="submit"
+                  disabled={!copilotQuestion.trim()}
+                  style={{
+                    ...styles.copilotSendButton,
+                    opacity: copilotQuestion.trim() ? 1 : 0.55,
+                    cursor: copilotQuestion.trim() ? "pointer" : "not-allowed",
+                  }}
+                >
+                  Send
+                </button>
+              </div>
+            </form>
+          </aside>
+        </>
+      )}
     </main>
   );
 }
@@ -1522,34 +1033,18 @@ function StaticNumberInput({
   style,
   ariaLabel,
 }: StaticNumberInputProps) {
-  function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    const enteredValue = event.target.value;
+  const [displayValue, setDisplayValue] = useState(String(value));
 
-    const validPattern = allowDecimal
-      ? /^\d*\.?\d*$/
-      : /^\d*$/;
+  useEffect(() => {
+    setDisplayValue(String(value));
+  }, [value]);
 
-    if (!validPattern.test(enteredValue)) {
-      return;
-    }
-
-    if (enteredValue === "") {
-      onChange(min);
-      return;
-    }
-
-    let numericValue = Number(enteredValue);
-
-    if (!Number.isFinite(numericValue)) {
-      return;
-    }
-
+  function commit(rawValue: string) {
+    if (rawValue === "" || rawValue === ".") return;
+    let numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue)) return;
     numericValue = Math.max(min, numericValue);
-
-    if (max !== undefined) {
-      numericValue = Math.min(max, numericValue);
-    }
-
+    if (max !== undefined) numericValue = Math.min(max, numericValue);
     onChange(numericValue);
   }
 
@@ -1557,60 +1052,50 @@ function StaticNumberInput({
     <input
       type="text"
       inputMode={allowDecimal ? "decimal" : "numeric"}
-      value={String(value)}
-      onChange={handleChange}
+      value={displayValue}
       autoComplete="off"
       aria-label={ariaLabel}
       style={style}
+      onChange={(event) => {
+        const next = event.target.value;
+        const pattern = allowDecimal ? /^\d*\.?\d*$/ : /^\d*$/;
+        if (!pattern.test(next)) return;
+        setDisplayValue(next);
+        commit(next);
+      }}
+      onBlur={() => {
+        if (displayValue === "" || displayValue === ".") {
+          setDisplayValue(String(min));
+          onChange(min);
+          return;
+        }
+        let numericValue = Number(displayValue);
+        if (!Number.isFinite(numericValue)) numericValue = min;
+        numericValue = Math.max(min, numericValue);
+        if (max !== undefined) numericValue = Math.min(max, numericValue);
+        setDisplayValue(String(numericValue));
+        onChange(numericValue);
+      }}
     />
   );
 }
 
-function SectionHeading({
-  title,
-  subtitle,
-}: SectionHeadingProps) {
+function InputLabel({ text, children }: { text: string; children: ReactNode }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: "10px",
-        marginBottom: "20px",
-      }}
-    >
-      <div
-        style={{
-          width: "7px",
-          minWidth: "7px",
-          height: "34px",
-          backgroundColor: theme.orange,
-          borderRadius: "4px",
-        }}
-      />
+    <label style={styles.inputLabel}>
+      <span style={styles.inputLabelText}>{text}</span>
+      {children}
+    </label>
+  );
+}
 
+function SectionHeading({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div style={styles.sectionHeadingContainer}>
+      <div style={styles.sectionHeadingAccent} />
       <div>
-        <h2
-          style={{
-            margin: 0,
-            color: theme.darkText,
-            fontSize: "22px",
-          }}
-        >
-          {title}
-        </h2>
-
-        {subtitle && (
-          <p
-            style={{
-              margin: "5px 0 0",
-              color: theme.mutedText,
-              fontSize: "14px",
-            }}
-          >
-            {subtitle}
-          </p>
-        )}
+        <h2 style={styles.sectionHeading}>{title}</h2>
+        {subtitle && <p style={styles.sectionSubtitle}>{subtitle}</p>}
       </div>
     </div>
   );
@@ -1624,48 +1109,10 @@ function SummaryCard({
   valueColor = theme.primaryDark,
 }: SummaryCardProps) {
   return (
-    <div
-      style={{
-        padding: "20px",
-        backgroundColor: theme.white,
-        border: `1px solid ${theme.border}`,
-        borderTop: `5px solid ${accentColor}`,
-        borderRadius: "12px",
-        boxShadow:
-          "0 5px 16px rgba(0, 111, 158, 0.08)",
-      }}
-    >
-      <div
-        style={{
-          minHeight: "38px",
-          marginBottom: "8px",
-          color: theme.mutedText,
-          fontSize: "14px",
-          fontWeight: 600,
-        }}
-      >
-        {label}
-      </div>
-
-      <strong
-        style={{
-          display: "block",
-          marginBottom: "4px",
-          color: valueColor,
-          fontSize: "26px",
-        }}
-      >
-        {value}
-      </strong>
-
-      <div
-        style={{
-          color: theme.mutedText,
-          fontSize: "13px",
-        }}
-      >
-        {helper}
-      </div>
+    <div style={{ ...styles.summaryCard, borderTop: `5px solid ${accentColor}` }}>
+      <div style={styles.summaryCardLabel}>{label}</div>
+      <strong style={{ ...styles.summaryCardValue, color: valueColor }}>{value}</strong>
+      <div style={styles.summaryCardHelper}>{helper}</div>
     </div>
   );
 }
@@ -1680,49 +1127,27 @@ function StatusBadge({
   background: string;
 }) {
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "5px 10px",
-        color,
-        backgroundColor: background,
-        borderRadius: "999px",
-        fontWeight: 700,
-      }}
-    >
-      {text}
-    </span>
+    <span style={{ ...styles.statusBadge, color, backgroundColor: background }}>{text}</span>
   );
 }
 
 function ActionButton({
   label,
   onClick,
-  variant,
+  primary = false,
 }: {
   label: string;
   onClick: () => void;
-  variant: "primary" | "secondary";
+  primary?: boolean;
 }) {
-  const isPrimary = variant === "primary";
-
   return (
     <button
       type="button"
       onClick={onClick}
       style={{
-        padding: "10px 15px",
-        color: isPrimary
-          ? theme.white
-          : theme.primaryDark,
-        backgroundColor: isPrimary
-          ? theme.primary
-          : theme.white,
-        border: `1px solid ${theme.primary}`,
-        borderRadius: "8px",
-        fontSize: "14px",
-        fontWeight: 700,
-        cursor: "pointer",
+        ...styles.actionButton,
+        color: primary ? theme.white : theme.primaryDark,
+        backgroundColor: primary ? theme.primary : theme.white,
       }}
     >
       {label}
@@ -1740,54 +1165,362 @@ function MessageBox({
   background: string;
 }) {
   return (
-    <div
-      style={{
-        marginBottom: "16px",
-        padding: "12px 14px",
-        color,
-        backgroundColor: background,
-        border: `1px solid ${color}`,
-        borderRadius: "10px",
-        fontSize: "14px",
-      }}
-    >
+    <div style={{ ...styles.messageBox, color, backgroundColor: background, border: `1px solid ${color}` }}>
       {text}
     </div>
   );
 }
 
-const tableStyle: CSSProperties = {
+function CopilotQuickAction({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} style={styles.copilotQuickAction}>
+      {label}
+    </button>
+  );
+}
+
+const baseInput: CSSProperties = {
   width: "100%",
-  minWidth: "850px",
-  overflow: "hidden",
-  borderCollapse: "separate",
-  borderSpacing: 0,
-  border: `1px solid ${theme.border}`,
-  borderRadius: "12px",
-};
-
-const tableHeaderRowStyle: CSSProperties = {
-  color: theme.white,
-  backgroundColor: theme.primary,
-};
-
-const tableHeaderStyle: CSSProperties = {
-  padding: "14px 12px",
-  color: theme.white,
-  borderBottom: `1px solid ${theme.primaryDark}`,
-  textAlign: "left",
-  fontSize: "13px",
-  fontWeight: 700,
-  whiteSpace: "nowrap",
-};
-
-const tableCellStyle: CSSProperties = {
-  padding: "12px",
+  minWidth: "90px",
+  height: "48px",
+  padding: "0 14px",
   color: theme.darkText,
-  borderBottom: `1px solid ${theme.border}`,
-  textAlign: "left",
-  fontSize: "14px",
-  whiteSpace: "nowrap",
+  backgroundColor: theme.white,
+  border: `1px solid ${theme.border}`,
+  borderRadius: "10px",
+  fontFamily: "inherit",
+  fontSize: "16px",
+  boxSizing: "border-box",
+  outlineColor: theme.primary,
+};
+
+const styles: Record<string, CSSProperties> = {
+  page: {
+    minHeight: "100vh",
+    padding: "32px 20px",
+    color: theme.darkText,
+    backgroundColor: theme.pageBackground,
+    fontFamily: "Arial, Helvetica, sans-serif",
+  },
+  container: { maxWidth: "1400px", margin: "0 auto" },
+  header: {
+    position: "relative",
+    overflow: "hidden",
+    marginBottom: "28px",
+    padding: "36px 42px",
+    color: theme.white,
+    backgroundColor: theme.primary,
+    borderRadius: "18px",
+    boxShadow: "0 10px 30px rgba(0, 111, 158, 0.18)",
+  },
+  headerAccent: {
+    position: "absolute",
+    inset: "0 0 0 auto",
+    width: "18px",
+    backgroundColor: theme.orange,
+  },
+  headerCircle: {
+    position: "absolute",
+    top: "-80px",
+    right: "90px",
+    width: "230px",
+    height: "230px",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: "50%",
+  },
+  eyebrow: {
+    marginBottom: "12px",
+    fontSize: "13px",
+    fontWeight: 700,
+    letterSpacing: "1.8px",
+    textTransform: "uppercase",
+  },
+  title: { margin: 0, color: theme.white, fontSize: "36px", lineHeight: 1.15 },
+  headerSubtitle: { margin: "12px 0 0", color: theme.white, fontSize: "18px" },
+  section: {
+    marginBottom: "24px",
+    padding: "24px",
+    backgroundColor: theme.white,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "16px",
+    boxShadow: "0 6px 20px rgba(0, 111, 158, 0.07)",
+  },
+  assumptionGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: "20px",
+  },
+  assumptionInput: { ...baseInput, marginTop: "6px", backgroundColor: theme.paleBlue },
+  input: baseInput,
+  inputLabel: { display: "flex", flexDirection: "column", minWidth: 0 },
+  inputLabelText: {
+    minHeight: "48px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    textAlign: "center",
+    fontWeight: 600,
+    lineHeight: 1.3,
+  },
+  toolbar: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: "16px",
+    flexWrap: "wrap",
+  },
+  buttonGroup: { display: "flex", gap: "8px", flexWrap: "wrap" },
+  helpBox: {
+    marginBottom: "18px",
+    padding: "12px 14px",
+    color: theme.mutedText,
+    backgroundColor: theme.paleBlue,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "10px",
+    fontSize: "13px",
+    lineHeight: 1.5,
+  },
+  table: {
+    width: "100%",
+    minWidth: "850px",
+    overflow: "hidden",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "12px",
+  },
+  tableHeaderRow: { color: theme.white, backgroundColor: theme.primary },
+  th: {
+    padding: "14px 12px",
+    color: theme.white,
+    borderBottom: `1px solid ${theme.primaryDark}`,
+    textAlign: "left",
+    fontSize: "13px",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+  },
+  td: {
+    padding: "12px",
+    color: theme.darkText,
+    borderBottom: `1px solid ${theme.border}`,
+    textAlign: "left",
+    fontSize: "14px",
+    whiteSpace: "nowrap",
+  },
+  removeButton: {
+    padding: "9px 12px",
+    color: theme.red,
+    backgroundColor: theme.redBackground,
+    border: "1px solid #FECDCA",
+    borderRadius: "8px",
+    fontWeight: 600,
+  },
+  actionButton: {
+    padding: "10px 15px",
+    border: `1px solid ${theme.primary}`,
+    borderRadius: "8px",
+    fontSize: "14px",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  messageBox: { marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", fontSize: "14px" },
+  emptyState: {
+    marginBottom: "24px",
+    padding: "24px",
+    color: theme.mutedText,
+    backgroundColor: theme.white,
+    border: `1px dashed ${theme.border}`,
+    borderRadius: "14px",
+    textAlign: "center",
+  },
+  sectionHeadingContainer: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "10px",
+    marginBottom: "20px",
+  },
+  sectionHeadingAccent: {
+    width: "7px",
+    minWidth: "7px",
+    height: "34px",
+    backgroundColor: theme.orange,
+    borderRadius: "4px",
+  },
+  sectionHeading: { margin: 0, color: theme.darkText, fontSize: "22px" },
+  sectionSubtitle: { margin: "5px 0 0", color: theme.mutedText, fontSize: "14px" },
+  summaryGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+    gap: "16px",
+  },
+  summaryCard: {
+    padding: "20px",
+    backgroundColor: theme.white,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "12px",
+    boxShadow: "0 5px 16px rgba(0, 111, 158, 0.08)",
+  },
+  summaryCardLabel: {
+    minHeight: "38px",
+    marginBottom: "8px",
+    color: theme.mutedText,
+    fontSize: "14px",
+    fontWeight: 600,
+  },
+  summaryCardValue: { display: "block", marginBottom: "4px", fontSize: "26px" },
+  summaryCardHelper: { color: theme.mutedText, fontSize: "13px" },
+  statusBadge: {
+    display: "inline-block",
+    padding: "5px 10px",
+    borderRadius: "999px",
+    fontWeight: 700,
+  },
+  executiveDecision: {
+    padding: "26px",
+    backgroundColor: theme.paleBlue,
+    border: `1px solid ${theme.border}`,
+    borderLeft: `9px solid ${theme.orange}`,
+    borderRadius: "16px",
+  },
+  decisionText: { lineHeight: 1.6 },
+  riskBadgeRow: { display: "flex", gap: "8px", margin: "16px 0", flexWrap: "wrap" },
+  riskIntervalBadge: {
+    padding: "7px 12px",
+    color: theme.white,
+    borderRadius: "999px",
+    fontWeight: 700,
+  },
+  copilotFloatingButton: {
+    position: "fixed",
+    right: "24px",
+    bottom: "24px",
+    zIndex: 1000,
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "14px 18px",
+    color: theme.white,
+    backgroundColor: theme.primary,
+    border: `2px solid ${theme.white}`,
+    borderRadius: "999px",
+    boxShadow: "0 10px 30px rgba(0, 111, 158, 0.35)",
+    fontSize: "14px",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  copilotOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 1001,
+    width: "100%",
+    height: "100%",
+    padding: 0,
+    backgroundColor: "rgba(22, 50, 71, 0.25)",
+    border: "none",
+  },
+  copilotPanel: {
+    position: "fixed",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1002,
+    display: "flex",
+    flexDirection: "column",
+    width: "min(420px, 100vw)",
+    color: theme.darkText,
+    backgroundColor: theme.white,
+    boxShadow: "-12px 0 35px rgba(22, 50, 71, 0.22)",
+  },
+  copilotHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "16px",
+    padding: "20px",
+    color: theme.white,
+    backgroundColor: theme.primary,
+    borderRight: `8px solid ${theme.orange}`,
+  },
+  copilotEyebrow: {
+    marginBottom: "4px",
+    fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "1px",
+    textTransform: "uppercase",
+  },
+  copilotCloseButton: {
+    width: "36px",
+    height: "36px",
+    color: theme.white,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    border: "1px solid rgba(255,255,255,0.35)",
+    borderRadius: "50%",
+    fontSize: "20px",
+    cursor: "pointer",
+  },
+  copilotBody: { flex: 1, overflowY: "auto", padding: "20px" },
+  copilotDescription: { marginTop: 0, color: theme.mutedText, lineHeight: 1.5 },
+  copilotActions: { display: "grid", gap: "10px", marginBottom: "20px" },
+  copilotQuickAction: {
+    padding: "11px 14px",
+    color: theme.primaryDark,
+    backgroundColor: theme.white,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "10px",
+    textAlign: "left",
+    fontSize: "14px",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  copilotResponse: {
+    padding: "16px",
+    color: theme.darkText,
+    backgroundColor: theme.paleBlue,
+    border: `1px solid ${theme.border}`,
+    borderLeft: `6px solid ${theme.orange}`,
+    borderRadius: "12px",
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+  },
+  copilotForm: {
+    padding: "16px",
+    backgroundColor: theme.pageBackground,
+    borderTop: `1px solid ${theme.border}`,
+  },
+  copilotQuestionLabel: {
+    display: "block",
+    marginBottom: "8px",
+    color: theme.darkText,
+    fontSize: "13px",
+    fontWeight: 700,
+  },
+  copilotQuestionRow: { display: "flex", alignItems: "stretch", gap: "8px" },
+  copilotQuestionInput: {
+    flex: 1,
+    minWidth: 0,
+    height: "44px",
+    padding: "0 12px",
+    color: theme.darkText,
+    backgroundColor: theme.white,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "8px",
+    fontFamily: "inherit",
+    fontSize: "14px",
+    boxSizing: "border-box",
+    outlineColor: theme.primary,
+  },
+  copilotSendButton: {
+    minWidth: "70px",
+    height: "44px",
+    padding: "0 15px",
+    color: theme.white,
+    backgroundColor: theme.primary,
+    border: "none",
+    borderRadius: "8px",
+    fontFamily: "inherit",
+    fontSize: "14px",
+    fontWeight: 700,
+  },
 };
 
 export default App;
