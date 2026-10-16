@@ -533,7 +533,7 @@ function App() {
           <div style={styles.headerCircle} />
           <div style={{ position: "relative", zIndex: 1 }}>
             <div style={styles.eyebrow}>Workforce Management</div>
-            <h1 style={styles.title}>Workforce Executive</h1>
+            <h1 style={styles.title}>GSSC WFM</h1>
             <p style={styles.headerSubtitle}>
               15-Minute Capacity and Erlang C Planner
             </p>
