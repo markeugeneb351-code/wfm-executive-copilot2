@@ -70,10 +70,10 @@ type EditableIntervalField =
   | "availableFTE";
 
 const initialIntervals: IntervalRow[] = [
-  { id: 1, interval: "09:00", forecastVolume: 100, availableFTE: 40 },
-  { id: 2, interval: "09:30", forecastVolume: 115, availableFTE: 40 },
-  { id: 3, interval: "10:00", forecastVolume: 125, availableFTE: 42 },
-  { id: 4, interval: "10:30", forecastVolume: 105, availableFTE: 43 },
+  { id: 1, interval: "09:00", forecastVolume: 50, availableFTE: 40 },
+  { id: 2, interval: "09:15", forecastVolume: 50, availableFTE: 40 },
+  { id: 3, interval: "09:30", forecastVolume: 58, availableFTE: 42 },
+  { id: 4, interval: "09:45", forecastVolume: 57, availableFTE: 43 },
 ];
 
 function createRowId(index = 0) {
@@ -161,7 +161,7 @@ function downloadCsv(fileName: string, csvContent: string) {
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [intervalMinutes, setIntervalMinutes] = useState(30);
+  const [intervalMinutes, setIntervalMinutes] = useState(15);
   const [targetSLA, setTargetSLA] = useState(80);
   const [answerTime, setAnswerTime] = useState(20);
   const [ahtSeconds, setAhtSeconds] = useState(420);
