@@ -7,10 +7,13 @@ import {
   type ReactNode,
 } from "react";
 
-import { calculateWorkforce } from "./calculations/erlangC";
+import {
+  calculateWorkforce,
+  type WorkforceResult,
+} from "./calculations/erlangC";
 
 /* -------------------------------------------------------------------------- */
-/* Types                                                                      */
+/* Types and defaults                                                         */
 /* -------------------------------------------------------------------------- */
 
 interface IntervalRow {
@@ -21,15 +24,9 @@ interface IntervalRow {
 }
 
 type RiskLevel = "Low" | "Medium" | "High" | "Critical";
+type Tone = "default" | "positive" | "warning" | "negative" | "info";
 
-interface CalculatedInterval extends IntervalRow {
-  offeredLoad: number;
-  requiredProductiveAgents: number;
-  requiredScheduledFTE: number;
-  projectedSLA: number;
-  occupancy: number;
-  fteGap: number;
-  capacityStatus: "Understaffed" | "Balanced" | "Overstaffed";
+interface CalculatedInterval extends IntervalRow, WorkforceResult {
   riskLevel: RiskLevel;
 }
 
@@ -38,22 +35,11 @@ interface NumberInputProps {
   onChange: (value: number) => void;
   min?: number;
   max?: number;
-  allowDecimal?: boolean;
-  ariaLabel: string;
+  integer?: boolean;
+  label: string;
 }
 
-type MetricTone = "default" | "positive" | "warning" | "negative";
-
-type EditableIntervalField =
-  | "interval"
-  | "forecastVolume"
-  | "availableFTE";
-
-/* -------------------------------------------------------------------------- */
-/* Defaults and utilities                                                     */
-/* -------------------------------------------------------------------------- */
-
-const startingIntervals: IntervalRow[] = [
+const initialIntervals: IntervalRow[] = [
   { id: 1, interval: "09:00", forecastVolume: 50, availableFTE: 40 },
   { id: 2, interval: "09:15", forecastVolume: 50, availableFTE: 40 },
   { id: 3, interval: "09:30", forecastVolume: 58, availableFTE: 42 },
@@ -62,26 +48,41 @@ const startingIntervals: IntervalRow[] = [
 
 const riskOrder: RiskLevel[] = ["Critical", "High", "Medium", "Low"];
 
-function normalizeHeader(header: string) {
-  return header.trim().toLowerCase().replace(/[\s_-]+/g, "");
-}
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
 
 function normalizeInterval(value: string) {
   const match = value.trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
 
   if (!match) {
-    throw new Error(
-      `Invalid interval "${value}". Use HH:MM, such as 09:15.`
-    );
+    throw new Error(`Invalid interval "${value}". Use HH:MM.`);
   }
 
   return `${match[1].padStart(2, "0")}:${match[2]}`;
 }
 
-function signedNumber(value: number, decimals = 2) {
-  const rounded = Number(value.toFixed(decimals));
+function normalizeHeader(value: string) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
 
-  return `${rounded > 0 ? "+" : ""}${rounded.toFixed(decimals)}`;
+function formatPercent(value: number | null) {
+  return value === null ? "N/A" : `${(value * 100).toFixed(1)}%`;
+}
+
+function formatSeconds(value: number | null) {
+  return value === null ? "N/A" : `${value.toFixed(1)} sec`;
+}
+
+function signed(value: number) {
+  const rounded = Number(value.toFixed(2));
+  return `${rounded > 0 ? "+" : ""}${rounded.toFixed(2)}`;
+}
+
+function getRiskTone(risk: RiskLevel): Tone {
+  if (risk === "Critical" || risk === "High") return "negative";
+  if (risk === "Medium") return "warning";
+  return "positive";
 }
 
 function parseCsv(text: string): string[][] {
@@ -119,10 +120,7 @@ function parseCsv(text: string): string[][] {
       (character === "\n" || character === "\r") &&
       !quoted
     ) {
-      if (character === "\r" && next === "\n") {
-        index += 1;
-      }
-
+      if (character === "\r" && next === "\n") index += 1;
       finishRecord();
     } else {
       field += character;
@@ -134,11 +132,10 @@ function parseCsv(text: string): string[][] {
   }
 
   finishRecord();
-
   return records;
 }
 
-function escapeCsvValue(value: string | number) {
+function escapeCsv(value: string | number) {
   const text = String(value);
 
   return /[",\r\n]/.test(text)
@@ -147,11 +144,11 @@ function escapeCsvValue(value: string | number) {
 }
 
 function downloadCsv(
-  fileName: string,
+  filename: string,
   rows: Array<Array<string | number>>
 ) {
   const content = rows
-    .map((row) => row.map(escapeCsvValue).join(","))
+    .map((row) => row.map(escapeCsv).join(","))
     .join("\r\n");
 
   const blob = new Blob([`\uFEFF${content}`], {
@@ -162,7 +159,7 @@ function downloadCsv(
   const link = document.createElement("a");
 
   link.href = url;
-  link.download = fileName;
+  link.download = filename;
   link.style.display = "none";
 
   document.body.appendChild(link);
@@ -178,29 +175,30 @@ function downloadCsv(
 
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const nextRowId = useRef(5);
+  const nextId = useRef(5);
 
-  const copilotQuestionRef = useRef<HTMLInputElement>(null);
   const copilotTriggerRef = useRef<HTMLButtonElement>(null);
+  const copilotPanelRef = useRef<HTMLElement>(null);
+  const copilotInputRef = useRef<HTMLInputElement>(null);
 
   const [intervalMinutes, setIntervalMinutes] = useState(15);
   const [targetSLA, setTargetSLA] = useState(80);
-  const [answerTime, setAnswerTime] = useState(20);
+  const [answerTime, setAnswerTime] = useState(90);
   const [ahtSeconds, setAhtSeconds] = useState(420);
   const [shrinkage, setShrinkage] = useState(30);
   const [maximumOccupancy, setMaximumOccupancy] = useState(85);
 
   const [intervals, setIntervals] =
-    useState<IntervalRow[]>(startingIntervals);
+    useState<IntervalRow[]>(initialIntervals);
 
+  const [inputRevision, setInputRevision] = useState(0);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [copilotQuestion, setCopilotQuestion] = useState("");
-
   const [copilotResponse, setCopilotResponse] = useState(
-    "Select a quick action or enter a workforce question."
+    "Select a quick action to analyze the current results."
   );
 
   /* ------------------------------ Calculations ----------------------------- */
@@ -217,85 +215,29 @@ function App() {
         );
       }
 
-      const assumptions = [
-        targetSLA,
-        answerTime,
-        ahtSeconds,
-        shrinkage,
-        maximumOccupancy,
-      ];
-
-      if (
-        !assumptions.every(Number.isFinite) ||
-        ahtSeconds <= 0 ||
-        targetSLA <= 0 ||
-        targetSLA >= 100 ||
-        answerTime < 1 ||
-        shrinkage < 0 ||
-        shrinkage >= 100 ||
-        maximumOccupancy <= 0 ||
-        maximumOccupancy >= 100
-      ) {
-        throw new Error("Check the service and staffing assumptions.");
-      }
-
-      const seenTimes = new Set<string>();
+      const seen = new Set<string>();
 
       const results: CalculatedInterval[] = intervals.map((row) => {
         const interval = normalizeInterval(row.interval);
 
-        if (seenTimes.has(interval)) {
+        if (seen.has(interval)) {
           throw new Error(`Duplicate interval: ${interval}.`);
         }
 
-        seenTimes.add(interval);
-
-        if (
-          !Number.isFinite(row.forecastVolume) ||
-          !Number.isInteger(row.forecastVolume) ||
-          row.forecastVolume < 0
-        ) {
-          throw new Error(
-            `${interval}: Forecast Volume must be a non-negative whole number.`
-          );
-        }
-
-        if (
-          !Number.isFinite(row.availableFTE) ||
-          row.availableFTE < 0
-        ) {
-          throw new Error(
-            `${interval}: Available FTE must be zero or greater.`
-          );
-        }
+        seen.add(interval);
 
         const result = calculateWorkforce({
           forecastVolume: row.forecastVolume,
+          availableFTE: row.availableFTE,
           ahtSeconds,
           intervalSeconds: intervalMinutes * 60,
           targetSLA: targetSLA / 100,
           answerTimeSeconds: answerTime,
           shrinkage: shrinkage / 100,
-          availableFTE: row.availableFTE,
           maximumOccupancy: maximumOccupancy / 100,
         });
 
-        const numericResults = [
-          result.offeredLoad,
-          result.requiredProductiveAgents,
-          result.requiredScheduledFTE,
-          result.projectedSLA,
-          result.occupancy,
-          result.fteGap,
-        ];
-
-        if (!numericResults.every(Number.isFinite)) {
-          throw new Error(
-            `${interval}: The calculation returned an invalid numeric result.`
-          );
-        }
-
-        const gapPercentage =
+        const gapRatio =
           result.requiredScheduledFTE > 0
             ? result.fteGap / result.requiredScheduledFTE
             : 0;
@@ -303,12 +245,16 @@ function App() {
         let riskLevel: RiskLevel = "Low";
 
         if (row.forecastVolume > 0) {
-          if (gapPercentage <= -0.15) {
+          if (!result.queueStable || gapRatio <= -0.15) {
             riskLevel = "Critical";
-          } else if (gapPercentage < -0.02) {
+          } else if (
+            !result.serviceLevelTargetMet ||
+            gapRatio < -0.02
+          ) {
             riskLevel = "High";
           } else if (
-            result.occupancy >= maximumOccupancy / 100 - 0.03
+            !result.occupancyTargetMet ||
+            result.fteGap < 0
           ) {
             riskLevel = "Medium";
           }
@@ -329,7 +275,7 @@ function App() {
         error:
           error instanceof Error
             ? error.message
-            : "Unable to calculate interval results.",
+            : "Unable to calculate workforce requirements.",
       };
     }
   }, [
@@ -342,53 +288,54 @@ function App() {
     maximumOccupancy,
   ]);
 
-  const calculatedIntervals = calculation.results;
+  const results = calculation.results;
 
   const summary = useMemo(() => {
-    if (calculatedIntervals.length === 0) {
-      return null;
-    }
+    if (results.length === 0) return null;
 
-    const count = calculatedIntervals.length;
+    const count = results.length;
 
-    const totalForecastVolume = calculatedIntervals.reduce(
+    const totalForecastVolume = results.reduce(
       (total, row) => total + row.forecastVolume,
       0
     );
 
     const averageRequiredFTE =
-      calculatedIntervals.reduce(
+      results.reduce(
         (total, row) => total + row.requiredScheduledFTE,
         0
       ) / count;
 
     const averageAvailableFTE =
-      calculatedIntervals.reduce(
+      results.reduce(
         (total, row) => total + row.availableFTE,
         0
       ) / count;
 
     const averageFTEGap =
-      calculatedIntervals.reduce(
-        (total, row) => total + row.fteGap,
-        0
-      ) / count;
+      results.reduce((total, row) => total + row.fteGap, 0) /
+      count;
 
-    const peakInterval = calculatedIntervals.reduce((peak, row) =>
-      row.requiredScheduledFTE > peak.requiredScheduledFTE ? row : peak
+    const peakInterval = results.reduce((peak, row) =>
+      row.requiredScheduledFTE > peak.requiredScheduledFTE
+        ? row
+        : peak
     );
 
-    const largestDeficitInterval = calculatedIntervals.reduce(
-      (deficit, row) => (row.fteGap < deficit.fteGap ? row : deficit)
+    const largestDeficit = results.reduce((lowest, row) =>
+      row.fteGap < lowest.fteGap ? row : lowest
     );
 
-    const atRiskIntervals = calculatedIntervals.filter(
-      (row) => row.riskLevel === "High" || row.riskLevel === "Critical"
+    const atRisk = results.filter(
+      (row) =>
+        row.riskLevel === "Critical" || row.riskLevel === "High"
     );
+
+    const unstable = results.filter((row) => !row.queueStable);
 
     const highestRisk =
-      riskOrder.find((level) =>
-        calculatedIntervals.some((row) => row.riskLevel === level)
+      riskOrder.find((risk) =>
+        results.some((row) => row.riskLevel === risk)
       ) ?? "Low";
 
     return {
@@ -397,23 +344,60 @@ function App() {
       averageAvailableFTE,
       averageFTEGap,
       peakInterval,
-      largestDeficitInterval,
-      atRiskIntervals,
+      largestDeficit,
+      atRisk,
+      unstable,
       highestRisk,
     };
-  }, [calculatedIntervals]);
+  }, [results]);
+
+  const hourlyRequirements = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        hour: string;
+        count: number;
+        net: number;
+        scheduled: number;
+      }
+    >();
+
+    for (const row of results) {
+      const hour = `${row.interval.slice(0, 2)}:00`;
+
+      const group = groups.get(hour) ?? {
+        hour,
+        count: 0,
+        net: 0,
+        scheduled: 0,
+      };
+
+      group.count += 1;
+      group.net = Math.max(
+        group.net,
+        row.requiredProductiveAgents
+      );
+      group.scheduled = Math.max(
+        group.scheduled,
+        row.requiredScheduledFTE
+      );
+
+      groups.set(hour, group);
+    }
+
+    return Array.from(groups.values()).sort((a, b) =>
+      a.hour.localeCompare(b.hour)
+    );
+  }, [results]);
 
   /* ------------------------------ Copilot panel ---------------------------- */
 
   useEffect(() => {
-    if (!copilotOpen) {
-      return;
-    }
+    if (!copilotOpen) return;
 
     const previousOverflow = document.body.style.overflow;
-
     document.body.style.overflow = "hidden";
-    copilotQuestionRef.current?.focus();
+    copilotInputRef.current?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -421,22 +405,17 @@ function App() {
         return;
       }
 
-      if (event.key !== "Tab") {
-        return;
-      }
+      if (event.key !== "Tab") return;
 
-      const panel = document.getElementById("workforce-copilot-panel");
+      const elements =
+        copilotPanelRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled])'
+        );
 
-      const focusable = panel?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), [tabindex="0"]'
-      );
+      if (!elements?.length) return;
 
-      if (!focusable?.length) {
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
+      const first = elements[0];
+      const last = elements[elements.length - 1];
 
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
@@ -459,38 +438,21 @@ function App() {
     };
   }, [copilotOpen]);
 
-  /* ------------------------------ Row controls ----------------------------- */
+  /* ------------------------------ Input actions ---------------------------- */
 
   function clearMessages() {
     setMessage("");
     setErrorMessage("");
   }
 
-  function updateInterval(
+  function updateRow(
     id: number,
-    field: EditableIntervalField,
-    value: string | number
+    changes: Partial<Omit<IntervalRow, "id">>
   ) {
     setIntervals((current) =>
-      current.map((row) => {
-        if (row.id !== id) {
-          return row;
-        }
-
-        switch (field) {
-          case "interval":
-            return { ...row, interval: String(value) };
-
-          case "forecastVolume":
-            return { ...row, forecastVolume: Number(value) };
-
-          case "availableFTE":
-            return { ...row, availableFTE: Number(value) };
-
-          default:
-            return row;
-        }
-      })
+      current.map((row) =>
+        row.id === id ? { ...row, ...changes } : row
+      )
     );
 
     clearMessages();
@@ -499,44 +461,45 @@ function App() {
   function addInterval() {
     clearMessages();
 
-    const lastRow = intervals[intervals.length - 1];
-    let nextTime = "09:00";
+    try {
+      const last = intervals[intervals.length - 1];
+      let nextTime = "09:00";
 
-    if (lastRow) {
-      try {
-        const validTime = normalizeInterval(lastRow.interval);
-        const [hours, minutes] = validTime.split(":").map(Number);
+      if (last) {
+        const [hours, minutes] = normalizeInterval(last.interval)
+          .split(":")
+          .map(Number);
 
-        const totalMinutes =
+        const total =
           (hours * 60 + minutes + intervalMinutes) % 1440;
 
-        nextTime = `${String(Math.floor(totalMinutes / 60)).padStart(
+        nextTime = `${String(Math.floor(total / 60)).padStart(
           2,
           "0"
-        )}:${String(totalMinutes % 60).padStart(2, "0")}`;
-      } catch {
-        setErrorMessage(
-          "Correct the last interval time before adding another interval."
-        );
-        return;
+        )}:${String(total % 60).padStart(2, "0")}`;
       }
-    }
 
-    if (intervals.some((row) => row.interval === nextTime)) {
+      if (intervals.some((row) => row.interval === nextTime)) {
+        throw new Error(
+          `${nextTime} already exists. Adjust the interval times first.`
+        );
+      }
+
+      const row: IntervalRow = {
+        id: nextId.current++,
+        interval: nextTime,
+        forecastVolume: 0,
+        availableFTE: 0,
+      };
+
+      setIntervals((current) => [...current, row]);
+    } catch (error) {
       setErrorMessage(
-        `Interval ${nextTime} already exists. Adjust the interval times before adding another row.`
+        error instanceof Error
+          ? error.message
+          : "Unable to add an interval."
       );
-      return;
     }
-
-    const newRow: IntervalRow = {
-      id: nextRowId.current++,
-      interval: nextTime,
-      forecastVolume: 0,
-      availableFTE: 0,
-    };
-
-    setIntervals((current) => [...current, newRow]);
   }
 
   function removeInterval(id: number) {
@@ -558,90 +521,96 @@ function App() {
       }))
     );
 
+    // Remount row inputs to clear any unfinished numeric drafts.
+    setInputRevision((current) => current + 1);
+
     setMessage(
       "Forecast Volume and Available FTE cleared. Interval times and assumptions retained."
     );
-
     setErrorMessage("");
-
     setCopilotResponse(
-      "Inputs were reset. Enter new workforce data before requesting analysis."
+      "Inputs were reset. Enter new workload data before analyzing capacity."
     );
   }
 
-  /* ------------------------------ CSV import ------------------------------- */
+  /* ------------------------------ CSV actions ------------------------------ */
 
   async function importCsv(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
     const file = input.files?.[0];
 
-    if (!file) {
-      return;
-    }
+    if (!file) return;
 
     clearMessages();
 
     try {
-      const text = (await file.text()).replace(/^\uFEFF/, "").trim();
+      const text = (await file.text())
+        .replace(/^\uFEFF/, "")
+        .trim();
 
-      if (!text) {
-        throw new Error("The selected CSV file is empty.");
-      }
+      if (!text) throw new Error("The selected CSV is empty.");
 
       const records = parseCsv(text);
 
       if (records.length < 2) {
         throw new Error(
-          "The CSV must contain a header and at least one data row."
+          "The CSV needs a header and at least one data row."
         );
       }
 
       const headers = records[0].map(normalizeHeader);
 
-      const intervalIndex = headers.findIndex((header) =>
+      const timeIndex = headers.findIndex((header) =>
         ["interval", "time", "intervaltime"].includes(header)
       );
 
       const volumeIndex = headers.findIndex((header) =>
-        ["forecastvolume", "volume", "forecast", "contacts"].includes(
-          header
-        )
+        [
+          "forecastvolume",
+          "volume",
+          "forecast",
+          "contacts",
+          "callsoffered",
+        ].includes(header)
       );
 
-      const availableIndex = headers.findIndex((header) =>
-        ["availablefte", "fte", "availableagents", "staffing"].includes(
-          header
-        )
+      const staffingIndex = headers.findIndex((header) =>
+        [
+          "availablefte",
+          "scheduledfte",
+          "fte",
+          "availableagents",
+          "staffing",
+        ].includes(header)
       );
 
-      if ([intervalIndex, volumeIndex, availableIndex].includes(-1)) {
+      if ([timeIndex, volumeIndex, staffingIndex].includes(-1)) {
         throw new Error(
-          "Required CSV columns: Interval, Forecast Volume, Available FTE."
+          "Required columns: Interval, Forecast Volume, Available FTE."
         );
       }
 
-      const seenTimes = new Set<string>();
+      const seen = new Set<string>();
 
-      const importedRows: IntervalRow[] = records
+      const imported: IntervalRow[] = records
         .slice(1)
         .map((values, index) => {
           const rowNumber = index + 2;
-
           const interval = normalizeInterval(
-            values[intervalIndex] ?? ""
+            values[timeIndex] ?? ""
           );
 
           const rawVolume = values[volumeIndex]?.trim() ?? "";
-          const rawAvailable = values[availableIndex]?.trim() ?? "";
+          const rawStaffing = values[staffingIndex]?.trim() ?? "";
 
-          if (rawVolume === "" || rawAvailable === "") {
+          if (rawVolume === "" || rawStaffing === "") {
             throw new Error(
-              `Row ${rowNumber}: Forecast Volume and Available FTE are required.`
+              `Row ${rowNumber}: Volume and staffing are required.`
             );
           }
 
           const forecastVolume = Number(rawVolume);
-          const availableFTE = Number(rawAvailable);
+          const availableFTE = Number(rawStaffing);
 
           if (
             !Number.isFinite(forecastVolume) ||
@@ -649,59 +618,56 @@ function App() {
             forecastVolume < 0
           ) {
             throw new Error(
-              `Row ${rowNumber}: Forecast Volume must be a non-negative whole number.`
+              `Row ${rowNumber}: Forecast volume must be a non-negative whole number.`
             );
           }
 
-          if (!Number.isFinite(availableFTE) || availableFTE < 0) {
+          if (
+            !Number.isFinite(availableFTE) ||
+            availableFTE < 0
+          ) {
             throw new Error(
               `Row ${rowNumber}: Available FTE must be zero or greater.`
             );
           }
 
-          if (seenTimes.has(interval)) {
+          if (seen.has(interval)) {
             throw new Error(
               `Row ${rowNumber}: Duplicate interval ${interval}.`
             );
           }
 
-          seenTimes.add(interval);
+          seen.add(interval);
 
           return {
-            id: nextRowId.current++,
+            id: nextId.current++,
             interval,
             forecastVolume,
             availableFTE,
           };
         });
 
-      importedRows.sort((first, second) =>
-        first.interval.localeCompare(second.interval)
+      imported.sort((a, b) =>
+        a.interval.localeCompare(b.interval)
       );
 
-      setIntervals(importedRows);
-
-      setMessage(
-        `${importedRows.length} interval row(s) imported successfully.`
-      );
-
+      setIntervals(imported);
+      setMessage(`${imported.length} interval(s) imported.`);
       setCopilotResponse(
-        "New data imported. Select a quick action to refresh the analysis."
+        "New data imported. Run an analysis action to refresh the response."
       );
     } catch (error) {
       setErrorMessage(
         error instanceof Error
           ? error.message
-          : "Unable to import the CSV file."
+          : "Unable to import the CSV."
       );
     } finally {
       input.value = "";
     }
   }
 
-  /* ------------------------------ CSV exports ------------------------------ */
-
-  function exportInputsCsv() {
+  function exportInputs() {
     downloadCsv("wfm-interval-inputs.csv", [
       ["Interval", "Forecast Volume", "Available FTE"],
       ...intervals.map((row) => [
@@ -711,40 +677,54 @@ function App() {
       ]),
     ]);
 
-    setMessage("Input data exported successfully.");
+    setMessage("Input data exported.");
     setErrorMessage("");
   }
 
-  function exportResultsCsv() {
-    if (calculation.error || calculatedIntervals.length === 0) {
+  function exportResults() {
+    if (calculation.error || results.length === 0) {
       setErrorMessage(
-        "Resolve calculation errors and enter interval data before exporting results."
+        "Resolve calculation errors before exporting results."
       );
       setMessage("");
       return;
     }
 
-    downloadCsv("wfm-capacity-results.csv", [
+    const csvPercent = (value: number | null) =>
+      value === null ? "N/A" : (value * 100).toFixed(1);
+
+    downloadCsv("wfm-erlang-c-results.csv", [
       [
         "Interval",
         "Interval Minutes",
         "Forecast Volume",
         "AHT Seconds",
         "SLA Target Percent",
-        "Answer Time Target Seconds",
+        "Answer Target Seconds",
         "Shrinkage Percent",
         "Maximum Occupancy Percent",
-        "Available FTE",
-        "Offered Load",
-        "Required Productive Agents",
-        "Required Scheduled FTE",
-        "FTE Gap",
-        "Occupancy Percent",
+        "Traffic Erlangs",
+        "Required Net Agents",
+        "Required Scheduled Agents",
+        "Available Scheduled FTE",
+        "Available Productive FTE",
+        "Available Net Agents",
+        "Scheduled FTE Gap",
+        "Projected Occupancy Percent",
+        "Estimated ASA Seconds",
         "Projected SLA Percent",
+        "Probability Of Wait Percent",
+        "Demand Capacity Ratio Percent",
+        "Queue Stable",
+        "SLA Target Met",
+        "Occupancy Target Met",
+        "SLA At Required Staffing Percent",
+        "Occupancy At Required Staffing Percent",
+        "ASA At Required Staffing Seconds",
         "Capacity Status",
-        "Risk Level",
+        "Risk",
       ],
-      ...calculatedIntervals.map((row) => [
+      ...results.map((row) => [
         row.interval,
         intervalMinutes,
         row.forecastVolume,
@@ -753,112 +733,102 @@ function App() {
         answerTime,
         shrinkage,
         maximumOccupancy,
-        row.availableFTE.toFixed(2),
         row.offeredLoad.toFixed(2),
         row.requiredProductiveAgents,
-        row.requiredScheduledFTE.toFixed(2),
+        row.requiredScheduledFTE,
+        row.availableFTE.toFixed(2),
+        row.availableProductiveFTE.toFixed(2),
+        row.availableProductiveAgents,
         row.fteGap.toFixed(2),
-        (row.occupancy * 100).toFixed(1),
-        (row.projectedSLA * 100).toFixed(1),
+        csvPercent(row.occupancy),
+        row.estimatedASASeconds === null
+          ? "N/A"
+          : row.estimatedASASeconds.toFixed(1),
+        csvPercent(row.projectedSLA),
+        csvPercent(row.probabilityOfWait),
+        csvPercent(row.demandCapacityRatio),
+        row.queueStable ? "Yes" : "No",
+        row.serviceLevelTargetMet ? "Yes" : "No",
+        row.occupancyTargetMet ? "Yes" : "No",
+        csvPercent(row.requiredStaffingSLA),
+        csvPercent(row.requiredStaffingOccupancy),
+        row.requiredStaffingASASeconds.toFixed(1),
         row.capacityStatus,
         row.riskLevel,
       ]),
     ]);
 
-    setMessage("Calculated results exported successfully.");
+    setMessage("Erlang C results exported.");
     setErrorMessage("");
   }
 
-  /* -------------------------- Local analysis preview ----------------------- */
+  /* ------------------------------ Local analysis --------------------------- */
 
-  function generateLocalCopilotAnalysis(request: string) {
+  function analyze(request: string) {
     if (!summary || calculation.error) {
       setCopilotResponse(
-        "No valid interval results are available. Check the inputs and calculation messages."
+        "No valid results are available. Resolve the calculation messages first."
       );
       return;
     }
 
     if (summary.totalForecastVolume === 0) {
       setCopilotResponse(
-        "Forecast volume is zero across all intervals. Enter workload data before assessing capacity."
+        "Forecast volume is zero. Enter workload data before assessing staffing."
       );
       return;
     }
 
     const query = request.toLowerCase();
 
+    const unstableNote =
+      summary.unstable.length > 0
+        ? ` ${summary.unstable.length} interval(s) have unstable queues: ${summary.unstable
+            .map((row) => row.interval)
+            .join(
+              ", "
+            )}. Steady-state SLA and ASA are unavailable for these intervals.`
+        : " All entered intervals have stable queues.";
+
     if (
       query.includes("action") ||
-      query.includes("recommend") ||
-      query.includes("overtime")
+      query.includes("recommend")
     ) {
       setCopilotResponse(
-        summary.atRiskIntervals.length > 0
-          ? `Review coverage during ${summary.atRiskIntervals
+        summary.atRisk.length > 0
+          ? `Review coverage during ${summary.atRisk
               .map((row) => row.interval)
               .join(
                 ", "
-              )}. Evaluate flexible offline work, cross-skilled support, and approved staffing adjustments. Validate operational constraints before changing schedules.`
-          : "No high or critical intervals are identified by the current gap-based rules. Review projected SLA and occupancy before making staffing changes."
+              )}. Evaluate approved capacity reallocation, flexible offline work, and cross-skilled support. Validate constraints before changing schedules.${unstableNote}`
+          : `No high or critical intervals are identified. Continue reviewing demand, SLA, occupancy, and staffing assumptions.${unstableNote}`
       );
-
       return;
     }
 
     if (
       query.includes("risk") ||
       query.includes("critical") ||
-      query.includes("interval")
+      query.includes("unstable")
     ) {
       setCopilotResponse(
-        summary.atRiskIntervals.length > 0
-          ? `${summary.atRiskIntervals.length} interval(s) have high or critical risk: ${summary.atRiskIntervals
-              .map((row) => row.interval)
-              .join(", ")}. The largest staffing deficit is at ${
-              summary.largestDeficitInterval.interval
-            }, with a gap of ${signedNumber(
-              summary.largestDeficitInterval.fteGap
-            )} FTE.`
-          : `No high or critical intervals are identified. The highest interval risk is ${summary.highestRisk}. Continue reviewing projected SLA, occupancy, and actual demand.`
+        `Highest risk: ${summary.highestRisk}. High or critical intervals: ${summary.atRisk.length}.${unstableNote}`
       );
-
       return;
     }
 
     setCopilotResponse(
-      `Total forecast volume: ${summary.totalForecastVolume.toLocaleString()}. Average required staffing: ${summary.averageRequiredFTE.toFixed(
+      `Forecast volume: ${summary.totalForecastVolume.toLocaleString()}. Average scheduled requirement: ${summary.averageRequiredFTE.toFixed(
         2
-      )} FTE. Average available staffing: ${summary.averageAvailableFTE.toFixed(
+      )}. Average scheduled availability: ${summary.averageAvailableFTE.toFixed(
         2
-      )} FTE. Average staffing gap: ${signedNumber(
+      )}. Average gap: ${signed(
         summary.averageFTEGap
-      )} FTE. Peak staffing requirement: ${
+      )} FTE. Peak requirement: ${
         summary.peakInterval.interval
-      }. Highest interval risk: ${summary.highestRisk}.`
+      }.${unstableNote}`
     );
   }
-
-  function submitCopilotQuestion() {
-    const question = copilotQuestion.trim();
-
-    if (!question) {
-      return;
-    }
-
-    generateLocalCopilotAnalysis(question);
-    setCopilotQuestion("");
-  }
-
-  const riskTone: MetricTone =
-    !summary
-      ? "default"
-      : summary.highestRisk === "Critical" ||
-          summary.highestRisk === "High"
-        ? "negative"
-        : summary.highestRisk === "Medium"
-          ? "warning"
-          : "positive";
 
   /* -------------------------------- Render -------------------------------- */
 
@@ -870,10 +840,9 @@ function App() {
         <header className="app-header">
           <div className="eyebrow">Workforce Management</div>
           <h1>GSSC WFM</h1>
-          <p>Intraday Capacity Planner</p>
+          <p>Intraday Capacity Planner · Erlang C</p>
         </header>
 
-        {/* LEFT: ASSUMPTIONS | RIGHT: DAILY SUMMARY */}
         <div className="overview-grid">
           <section className="panel">
             <SectionHeading
@@ -882,107 +851,111 @@ function App() {
             />
 
             <div className="assumptions-grid">
-              <AssumptionField label="Interval" unit="min">
+              <Assumption label="Interval" unit="min">
                 <NumberInput
                   value={intervalMinutes}
+                  onChange={setIntervalMinutes}
                   min={1}
                   max={1440}
-                  allowDecimal={false}
-                  onChange={setIntervalMinutes}
-                  ariaLabel="Interval length in minutes"
+                  integer
+                  label="Interval minutes"
                 />
-              </AssumptionField>
+              </Assumption>
 
-              <AssumptionField label="SLA Target" unit="%">
+              <Assumption label="SLA Target" unit="%">
                 <NumberInput
                   value={targetSLA}
+                  onChange={setTargetSLA}
                   min={1}
                   max={99.9}
-                  onChange={setTargetSLA}
-                  ariaLabel="SLA target percentage"
+                  label="SLA target percentage"
                 />
-              </AssumptionField>
+              </Assumption>
 
-              <AssumptionField
-                label="Answer Target"
-                unit="sec"
-                hint="Answer-time threshold used for the service-level calculation."
-              >
+              <Assumption label="Answer Target" unit="sec">
                 <NumberInput
                   value={answerTime}
-                  min={1}
-                  allowDecimal={false}
                   onChange={setAnswerTime}
-                  ariaLabel="Service-level answer-time threshold in seconds"
+                  min={0}
+                  integer
+                  label="SLA answer-time threshold in seconds"
                 />
-              </AssumptionField>
+              </Assumption>
 
-              <AssumptionField label="AHT" unit="sec">
+              <Assumption label="AHT" unit="sec">
                 <NumberInput
                   value={ahtSeconds}
-                  min={1}
                   onChange={setAhtSeconds}
-                  ariaLabel="Average handle time in seconds"
+                  min={1}
+                  label="Average handle time in seconds"
                 />
-              </AssumptionField>
+              </Assumption>
 
-              <AssumptionField label="Shrinkage" unit="%">
+              <Assumption label="Shrinkage" unit="%">
                 <NumberInput
                   value={shrinkage}
+                  onChange={setShrinkage}
                   min={0}
                   max={99.9}
-                  onChange={setShrinkage}
-                  ariaLabel="Shrinkage percentage"
+                  label="Shrinkage percentage"
                 />
-              </AssumptionField>
+              </Assumption>
 
-              <AssumptionField label="Max Occupancy" unit="%">
+              <Assumption label="Max Occupancy" unit="%">
                 <NumberInput
                   value={maximumOccupancy}
+                  onChange={setMaximumOccupancy}
                   min={1}
                   max={99.9}
-                  onChange={setMaximumOccupancy}
-                  ariaLabel="Maximum occupancy percentage"
+                  label="Maximum occupancy percentage"
                 />
-              </AssumptionField>
+              </Assumption>
             </div>
+
+            <p className="footnote">
+              Available FTE means scheduled staffing before shrinkage.
+              Available productive agents are rounded down after
+              shrinkage.
+            </p>
           </section>
 
           <section className="panel">
             <SectionHeading
               title="Daily Capacity Summary"
-              subtitle="Calculated from the current interval inputs."
+              subtitle="Scheduled requirements and availability."
             />
 
             <div className="summary-grid">
-              <SummaryMetric
+              <Metric
                 label="Total Forecast Volume"
                 value={
                   summary?.totalForecastVolume.toLocaleString() ?? "—"
                 }
-                helper="Across calculated intervals"
+                helper="Across entered intervals"
               />
 
-              <SummaryMetric
+              <Metric
                 label="Average FTE Required"
-                value={summary?.averageRequiredFTE.toFixed(2) ?? "—"}
-                helper="Shrinkage adjusted"
-              />
-
-              <SummaryMetric
-                label="Average Available FTE"
-                value={summary?.averageAvailableFTE.toFixed(2) ?? "—"}
-                helper="Current interval staffing"
-              />
-
-              <SummaryMetric
-                label="FTE Gap"
                 value={
-                  summary
-                    ? signedNumber(summary.averageFTEGap)
-                    : "—"
+                  summary?.averageRequiredFTE.toFixed(2) ?? "—"
                 }
-                helper="Average available minus required"
+                helper="Scheduled, shrinkage adjusted"
+              />
+
+              <Metric
+                label="Average Available FTE"
+                value={
+                  summary?.averageAvailableFTE.toFixed(2) ?? "—"
+                }
+                helper="Scheduled, before shrinkage"
+              />
+
+              <Metric
+                label="Average FTE Gap"
+                value={
+                  summary ? signed(summary.averageFTEGap) : "—"
+                }
+                helper="Available minus required"
                 tone={
                   !summary
                     ? "default"
@@ -992,38 +965,40 @@ function App() {
                 }
               />
 
-              <SummaryMetric
+              <Metric
                 label="Peak Interval"
                 value={summary?.peakInterval.interval ?? "—"}
                 helper={
                   summary
-                    ? `${summary.peakInterval.requiredScheduledFTE.toFixed(
-                        2
-                      )} required FTE`
+                    ? `${summary.peakInterval.requiredScheduledFTE} scheduled agents required`
                     : "Highest staffing requirement"
                 }
               />
 
-              <SummaryMetric
+              <Metric
                 label="At-Risk Level"
                 value={summary?.highestRisk ?? "—"}
                 helper={
                   summary
-                    ? `${summary.atRiskIntervals.length} high / critical interval(s)`
+                    ? `${summary.atRisk.length} high / critical; ${summary.unstable.length} unstable`
                     : "Highest interval risk"
                 }
-                tone={riskTone}
+                tone={
+                  summary
+                    ? getRiskTone(summary.highestRisk)
+                    : "default"
+                }
               />
             </div>
           </section>
         </div>
 
-        {/* DAILY INTERVAL OUTPUTS: NO SLA COLUMN */}
-        <section className="panel interval-panel">
+        {/* No SLA column in Daily Interval Outputs. */}
+        <section className="panel spaced">
           <div className="toolbar">
             <SectionHeading
               title="Daily Interval Outputs"
-              subtitle={`Enter workload and staffing for each ${intervalMinutes}-minute interval.`}
+              subtitle={`Enter workload and scheduled staffing for ${intervalMinutes}-minute intervals.`}
             />
 
             <div className="button-group">
@@ -1039,19 +1014,18 @@ function App() {
                 label="Import CSV"
                 onClick={() => fileInputRef.current?.click()}
               />
-
               <ActionButton
                 label="Export Inputs"
-                onClick={exportInputsCsv}
+                onClick={exportInputs}
               />
-
               <ActionButton
                 label="Export Results"
-                onClick={exportResultsCsv}
+                onClick={exportResults}
               />
-
-              <ActionButton label="Reset" onClick={resetInputs} />
-
+              <ActionButton
+                label="Reset"
+                onClick={resetInputs}
+              />
               <ActionButton
                 label="+ Add Interval"
                 onClick={addInterval}
@@ -1063,8 +1037,9 @@ function App() {
           <div className="help-box">
             CSV headers: <strong>Interval</strong>,{" "}
             <strong>Forecast Volume</strong>,{" "}
-            <strong>Available FTE</strong>. Reset clears workload and
-            staffing while retaining interval times and assumptions.
+            <strong>Available FTE</strong>. Available FTE is scheduled
+            staffing before shrinkage. Reset retains times and
+            assumptions.
           </div>
 
           {message && (
@@ -1096,7 +1071,7 @@ function App() {
                 </tr>
               </thead>
 
-              <tbody>
+              <tbody key={inputRevision}>
                 {intervals.map((row, index) => (
                   <tr key={row.id}>
                     <td>
@@ -1107,11 +1082,9 @@ function App() {
                         value={row.interval}
                         aria-label={`Interval row ${index + 1}`}
                         onChange={(event) =>
-                          updateInterval(
-                            row.id,
-                            "interval",
-                            event.target.value
-                          )
+                          updateRow(row.id, {
+                            interval: event.target.value,
+                          })
                         }
                       />
                     </td>
@@ -1119,31 +1092,29 @@ function App() {
                     <td>
                       <NumberInput
                         value={row.forecastVolume}
-                        min={0}
-                        allowDecimal={false}
                         onChange={(value) =>
-                          updateInterval(
-                            row.id,
-                            "forecastVolume",
-                            value
-                          )
+                          updateRow(row.id, {
+                            forecastVolume: value,
+                          })
                         }
-                        ariaLabel={`Forecast volume row ${index + 1}`}
+                        min={0}
+                        integer
+                        label={`Forecast volume row ${index + 1}`}
                       />
                     </td>
 
                     <td>
                       <NumberInput
                         value={row.availableFTE}
-                        min={0}
                         onChange={(value) =>
-                          updateInterval(
-                            row.id,
-                            "availableFTE",
-                            value
-                          )
+                          updateRow(row.id, {
+                            availableFTE: value,
+                          })
                         }
-                        ariaLabel={`Available FTE row ${index + 1}`}
+                        min={0}
+                        label={`Scheduled available FTE row ${
+                          index + 1
+                        }`}
                       />
                     </td>
 
@@ -1152,8 +1123,8 @@ function App() {
                         type="button"
                         className="remove-button"
                         disabled={intervals.length === 1}
-                        aria-label={`Remove interval ${row.interval}`}
                         onClick={() => removeInterval(row.id)}
+                        aria-label={`Remove interval ${row.interval}`}
                       >
                         Remove
                       </button>
@@ -1165,35 +1136,42 @@ function App() {
           </div>
         </section>
 
-        {!summary && !calculation.error && (
-          <section className="panel empty-state">
-            <strong>No interval results available</strong>
-            <p>Add interval data to calculate capacity.</p>
-          </section>
-        )}
-
         {summary && (
           <>
-            {/* DETAILED RESULTS: SLA RETAINED */}
-            <section className="panel results-panel">
+            <section className="panel spaced">
               <SectionHeading
                 title="Interval Capacity Results"
-                subtitle="Calculated staffing, occupancy, SLA, and risk."
+                subtitle={`Performance at available productive staffing. Target: ${targetSLA}% within ${answerTime} seconds.`}
               />
 
-              <div className="table-scroll">
+              {summary.unstable.length > 0 && (
+                <div className="notice error result-warning">
+                  <strong>
+                    {summary.unstable.length} unstable interval(s).
+                  </strong>{" "}
+                  Available productive agents do not exceed offered
+                  load. Steady-state SLA, ASA, occupancy, and wait
+                  probability are unavailable.
+                </div>
+              )}
+
+              <div className="table-scroll section-table">
                 <table className="data-table results-table">
                   <thead>
                     <tr>
                       {[
                         "Interval",
-                        "Offered Load",
-                        "Productive",
-                        "Required FTE",
-                        "Available",
+                        "Traffic",
+                        "Required Net",
+                        "Required Scheduled",
+                        "Available Scheduled",
+                        "Available Net",
                         "Gap",
                         "Occupancy",
-                        "SLA",
+                        "ASA",
+                        "Projected SLA",
+                        "Wait Probability",
+                        "Queue",
                         "Status",
                         "Risk",
                       ].map((heading) => (
@@ -1205,20 +1183,26 @@ function App() {
                   </thead>
 
                   <tbody>
-                    {calculatedIntervals.map((row) => (
+                    {results.map((row) => (
                       <tr key={row.id}>
                         <td>
-                          <strong className="interval-time">
+                          <strong className="text-info">
                             {row.interval}
                           </strong>
                         </td>
 
                         <td>{row.offeredLoad.toFixed(2)}</td>
                         <td>{row.requiredProductiveAgents}</td>
-                        <td>
-                          {row.requiredScheduledFTE.toFixed(2)}
-                        </td>
+                        <td>{row.requiredScheduledFTE}</td>
                         <td>{row.availableFTE.toFixed(2)}</td>
+
+                        <td
+                          title={`${row.availableProductiveFTE.toFixed(
+                            2
+                          )} productive FTE before rounding down`}
+                        >
+                          {row.availableProductiveAgents}
+                        </td>
 
                         <td
                           className={
@@ -1227,19 +1211,58 @@ function App() {
                               : "text-positive strong"
                           }
                         >
-                          {signedNumber(row.fteGap)}
+                          {signed(row.fteGap)}
+                        </td>
+
+                        <td
+                          className={
+                            !row.queueStable
+                              ? "text-negative"
+                              : row.occupancyTargetMet
+                                ? ""
+                                : "text-warning strong"
+                          }
+                        >
+                          {formatPercent(row.occupancy)}
                         </td>
 
                         <td>
-                          {(row.occupancy * 100).toFixed(1)}%
+                          {row.queueStable
+                            ? formatSeconds(row.estimatedASASeconds)
+                            : "Unstable"}
+                        </td>
+
+                        <td
+                          className={
+                            row.serviceLevelTargetMet
+                              ? "text-positive strong"
+                              : "text-negative strong"
+                          }
+                        >
+                          {row.queueStable
+                            ? formatPercent(row.projectedSLA)
+                            : "Unstable"}
                         </td>
 
                         <td>
-                          {(row.projectedSLA * 100).toFixed(1)}%
+                          {formatPercent(row.probabilityOfWait)}
                         </td>
 
                         <td>
-                          <StatusBadge
+                          <Badge
+                            text={
+                              row.queueStable ? "Stable" : "Unstable"
+                            }
+                            tone={
+                              row.queueStable
+                                ? "positive"
+                                : "negative"
+                            }
+                          />
+                        </td>
+
+                        <td>
+                          <Badge
                             text={row.capacityStatus}
                             tone={
                               row.capacityStatus === "Understaffed"
@@ -1252,16 +1275,9 @@ function App() {
                         </td>
 
                         <td>
-                          <StatusBadge
+                          <Badge
                             text={row.riskLevel}
-                            tone={
-                              row.riskLevel === "High" ||
-                              row.riskLevel === "Critical"
-                                ? "negative"
-                                : row.riskLevel === "Medium"
-                                  ? "warning"
-                                  : "positive"
-                            }
+                            tone={getRiskTone(row.riskLevel)}
                           />
                         </td>
                       </tr>
@@ -1271,8 +1287,48 @@ function App() {
               </div>
 
               <p className="footnote">
-                Risk uses staffing-gap and occupancy rules. Review
-                projected SLA separately.
+                Required Net meets both SLA and maximum occupancy.
+                Required Scheduled is rounded up after shrinkage.
+                Available Net is rounded down after shrinkage.
+                Projected performance uses Available Net, not
+                Required Net. Zero-demand intervals use 100% SLA
+                and zero waiting as a no-demand convention.
+              </p>
+            </section>
+
+            <section className="panel spaced">
+              <SectionHeading
+                title="Hourly Peak Requirements"
+                subtitle="Maximum requirement among entered intervals starting in each hour."
+              />
+
+              <div className="table-scroll section-table">
+                <table className="data-table hourly-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Hour Starting</th>
+                      <th scope="col">Intervals Entered</th>
+                      <th scope="col">Peak Net Agents</th>
+                      <th scope="col">Peak Scheduled Agents</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {hourlyRequirements.map((row) => (
+                      <tr key={row.hour}>
+                        <td>{row.hour}</td>
+                        <td>{row.count}</td>
+                        <td>{row.net}</td>
+                        <td>{row.scheduled}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="footnote">
+                Missing intervals are not inferred. This is a
+                single-day peak summary, not a shift schedule.
               </p>
             </section>
 
@@ -1284,80 +1340,84 @@ function App() {
 
               {summary.totalForecastVolume === 0 ? (
                 <p>
-                  Forecast volume is zero across all intervals.
-                  Enter workload data before assessing staffing
-                  requirements.
+                  Forecast volume is zero. Enter workload data
+                  before assessing staffing requirements.
                 </p>
-              ) : summary.atRiskIntervals.length > 0 ? (
+              ) : summary.atRisk.length > 0 ? (
                 <>
                   <p>
-                    <strong>
-                      {summary.atRiskIntervals.length}
-                    </strong>{" "}
-                    interval
-                    {summary.atRiskIntervals.length > 1
-                      ? "s are"
-                      : " is"}{" "}
-                    classified as high or critical risk.
-                  </p>
-
-                  <p>
-                    Review capacity reallocation, flexible offline
-                    work, cross-skilled support, and approved
-                    staffing adjustments during:
+                    <strong>{summary.atRisk.length}</strong>{" "}
+                    interval(s) are high or critical risk.
+                    Prioritize reviewing these intervals:
                   </p>
 
                   <div className="risk-intervals">
-                    {summary.atRiskIntervals.map((row) => (
-                      <span
+                    {summary.atRisk.map((row) => (
+                      <Badge
                         key={row.id}
-                        className={`risk-time ${
-                          row.riskLevel === "Critical"
-                            ? "critical"
-                            : ""
-                        }`}
-                      >
-                        {row.interval}
-                      </span>
+                        text={`${row.interval} · ${row.riskLevel}`}
+                        tone={getRiskTone(row.riskLevel)}
+                      />
                     ))}
                   </div>
 
+                  {summary.unstable.length > 0 && (
+                    <p className="text-negative">
+                      <strong>
+                        {summary.unstable.length} interval(s)
+                        have unstable queues.
+                      </strong>{" "}
+                      Unavailable SLA does not mean the target is met.
+                    </p>
+                  )}
+
+                  {summary.largestDeficit.fteGap < 0 && (
+                    <p>
+                      Largest scheduled staffing deficit:{" "}
+                      <strong>
+                        {summary.largestDeficit.interval}
+                      </strong>
+                      , with a gap of{" "}
+                      <strong className="text-negative">
+                        {signed(summary.largestDeficit.fteGap)} FTE
+                      </strong>
+                      .
+                    </p>
+                  )}
+
                   <p>
-                    The largest deficit is at{" "}
-                    <strong>
-                      {summary.largestDeficitInterval.interval}
-                    </strong>
-                    , with a staffing gap of{" "}
-                    <strong className="text-negative">
-                      {signedNumber(
-                        summary.largestDeficitInterval.fteGap
-                      )}{" "}
-                      FTE
-                    </strong>
-                    .
+                    Review approved capacity reallocation,
+                    flexible offline work, and cross-skilled
+                    support. Validate staffing assumptions and
+                    operational constraints before changing
+                    schedules.
                   </p>
                 </>
               ) : (
                 <p>
-                  No high or critical intervals are identified by
-                  the current risk rules. Review projected SLA,
-                  occupancy, and actual demand before making
-                  staffing changes.
+                  No high or critical intervals are identified.
+                  Continue reviewing projected SLA, occupancy,
+                  staffing gaps, and actual demand.
                 </p>
               )}
+
+              <p className="footnote">
+                Risk labels are dashboard rules based on queue
+                stability, SLA, occupancy, and staffing gaps.
+                They are not outputs of the Erlang C equation.
+              </p>
             </section>
           </>
         )}
       </div>
 
-      {/* LOCAL COPILOT PREVIEW */}
       <button
         ref={copilotTriggerRef}
         type="button"
         className="copilot-floating"
         aria-haspopup="dialog"
         aria-expanded={copilotOpen}
-        aria-controls="workforce-copilot-panel"
+        aria-controls="workforce-copilot"
         onClick={() => setCopilotOpen(true)}
       >
         <span aria-hidden="true">✦</span>
@@ -1373,7 +1433,8 @@ function App() {
           />
 
           <aside
-            id="workforce-copilot-panel"
+            ref={copilotPanelRef}
+            id="workforce-copilot"
             className="copilot-panel"
             role="dialog"
             aria-modal="true"
@@ -1381,7 +1442,7 @@ function App() {
           >
             <div className="copilot-header">
               <div>
-                <div className="copilot-eyebrow">
+                <div className="eyebrow">
                   Local Analysis Preview
                 </div>
                 <h2 id="copilot-title">Workforce Copilot</h2>
@@ -1398,38 +1459,24 @@ function App() {
             </div>
 
             <div className="copilot-body">
-              <p className="copilot-description">
-                This is a rule-based local preview using dashboard
-                results. It is not connected to an external AI
-                service.
+              <p className="muted">
+                Rule-based local analysis of the current
+                calculations. No external AI service is connected.
+                Run an action again after changing inputs.
               </p>
 
               <div className="copilot-actions">
                 <ActionButton
                   label="Analyze daily capacity"
-                  onClick={() =>
-                    generateLocalCopilotAnalysis(
-                      "Analyze daily capacity"
-                    )
-                  }
+                  onClick={() => analyze("Analyze daily capacity")}
                 />
-
                 <ActionButton
-                  label="Identify critical intervals"
-                  onClick={() =>
-                    generateLocalCopilotAnalysis(
-                      "Identify critical interval risks"
-                    )
-                  }
+                  label="Identify critical and unstable intervals"
+                  onClick={() => analyze("Identify critical risks")}
                 />
-
                 <ActionButton
                   label="Recommend operational actions"
-                  onClick={() =>
-                    generateLocalCopilotAnalysis(
-                      "Recommend operational actions"
-                    )
-                  }
+                  onClick={() => analyze("Recommend actions")}
                 />
               </div>
 
@@ -1446,7 +1493,12 @@ function App() {
               className="copilot-form"
               onSubmit={(event) => {
                 event.preventDefault();
-                submitCopilotQuestion();
+
+                const question = copilotQuestion.trim();
+                if (!question) return;
+
+                analyze(question);
+                setCopilotQuestion("");
               }}
             >
               <label htmlFor="copilot-question">
@@ -1455,12 +1507,11 @@ function App() {
 
               <div className="copilot-question-row">
                 <input
-                  ref={copilotQuestionRef}
+                  ref={copilotInputRef}
                   id="copilot-question"
                   className="field-input"
-                  type="text"
                   value={copilotQuestion}
-                  placeholder="Explain today's staffing risk..."
+                  placeholder="Explain the staffing risks..."
                   autoComplete="off"
                   onChange={(event) =>
                     setCopilotQuestion(event.target.value)
@@ -1484,7 +1535,7 @@ function App() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Reusable components                                                        */
+/* Components                                                                 */
 /* -------------------------------------------------------------------------- */
 
 function NumberInput({
@@ -1492,8 +1543,8 @@ function NumberInput({
   onChange,
   min = 0,
   max,
-  allowDecimal = true,
-  ariaLabel,
+  integer = false,
+  label,
 }: NumberInputProps) {
   const [draft, setDraft] = useState(String(value));
 
@@ -1501,20 +1552,16 @@ function NumberInput({
     setDraft(String(value));
   }, [value]);
 
-  function handleChange(rawValue: string) {
-    const pattern = allowDecimal ? /^\d*\.?\d*$/ : /^\d*$/;
+  function change(raw: string) {
+    const pattern = integer ? /^\d*$/ : /^\d*\.?\d*$/;
 
-    if (!pattern.test(rawValue)) {
-      return;
-    }
+    if (!pattern.test(raw)) return;
 
-    setDraft(rawValue);
+    setDraft(raw);
 
-    if (rawValue === "" || rawValue === ".") {
-      return;
-    }
+    if (raw === "" || raw === ".") return;
 
-    const parsed = Number(rawValue);
+    const parsed = Number(raw);
 
     if (
       Number.isFinite(parsed) &&
@@ -1525,36 +1572,31 @@ function NumberInput({
     }
   }
 
-  function commitValue() {
+  function commit() {
     const parsed =
-      draft.trim() === "" || draft === "." ? min : Number(draft);
+      draft === "" || draft === "." ? min : Number(draft);
 
-    let nextValue = Number.isFinite(parsed) ? parsed : value;
+    let next = Number.isFinite(parsed) ? parsed : value;
 
-    if (!allowDecimal) {
-      nextValue = Math.trunc(nextValue);
-    }
+    if (integer) next = Math.trunc(next);
 
-    nextValue = Math.max(min, nextValue);
+    next = Math.max(min, next);
+    if (max !== undefined) next = Math.min(max, next);
 
-    if (max !== undefined) {
-      nextValue = Math.min(max, nextValue);
-    }
-
-    setDraft(String(nextValue));
-    onChange(nextValue);
+    setDraft(String(next));
+    onChange(next);
   }
 
   return (
     <input
       className="field-input"
       type="text"
-      inputMode={allowDecimal ? "decimal" : "numeric"}
+      inputMode={integer ? "numeric" : "decimal"}
       value={draft}
-      aria-label={ariaLabel}
+      aria-label={label}
       autoComplete="off"
-      onChange={(event) => handleChange(event.target.value)}
-      onBlur={commitValue}
+      onChange={(event) => change(event.target.value)}
+      onBlur={commit}
       onFocus={(event) => event.currentTarget.select()}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
@@ -1566,21 +1608,18 @@ function NumberInput({
   );
 }
 
-function AssumptionField({
+function Assumption({
   label,
   unit,
-  hint,
   children,
 }: {
   label: string;
   unit: string;
-  hint?: string;
   children: ReactNode;
 }) {
   return (
-    <label className="assumption-field" title={hint}>
+    <label className="assumption-field">
       <span className="field-label">{label}</span>
-
       <span className="unit-input">
         {children}
         <span className="input-unit" aria-hidden="true">
@@ -1601,7 +1640,6 @@ function SectionHeading({
   return (
     <div className="section-heading">
       <span className="section-accent" aria-hidden="true" />
-
       <div>
         <h2>{title}</h2>
         {subtitle && <p>{subtitle}</p>}
@@ -1610,7 +1648,7 @@ function SectionHeading({
   );
 }
 
-function SummaryMetric({
+function Metric({
   label,
   value,
   helper,
@@ -1619,16 +1657,14 @@ function SummaryMetric({
   label: string;
   value: string;
   helper: string;
-  tone?: MetricTone;
+  tone?: Tone;
 }) {
   return (
     <div className="summary-metric">
-      <div className="metric-label">{label}</div>
-
+      <div className="field-label">{label}</div>
       <strong className={`metric-value text-${tone}`}>
         {value}
       </strong>
-
       <div className="metric-helper">{helper}</div>
     </div>
   );
@@ -1654,14 +1690,18 @@ function ActionButton({
   );
 }
 
-function StatusBadge({
+function Badge({
   text,
   tone,
 }: {
   text: string;
-  tone: "positive" | "negative" | "warning" | "info";
+  tone: Tone;
 }) {
-  return <span className={`status-badge badge-${tone}`}>{text}</span>;
+  return (
+    <span className={`status-badge badge-${tone}`}>
+      {text}
+    </span>
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1669,7 +1709,6 @@ function StatusBadge({
 /* -------------------------------------------------------------------------- */
 
 const appCss = `
-  /* Override starter-page constraints so the dashboard can use full width. */
   html {
     min-width: 320px;
     background: #f4fafd;
@@ -1693,7 +1732,7 @@ const appCss = `
     --primary: #009cde;
     --primary-dark: #006f9e;
     --orange: #ff8200;
-    --pale-blue: #eaf8fe;
+    --pale: #eaf8fe;
     --page: #f4fafd;
     --text: #163247;
     --muted: #527080;
@@ -1705,14 +1744,12 @@ const appCss = `
     --red: #b42318;
     --red-bg: #fef3f2;
 
-    min-height: 100vh;
     width: 100%;
+    min-height: 100vh;
     padding: 20px 16px 100px;
     color: var(--text);
     background: var(--page);
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 14px;
-    line-height: 1.4;
+    font: 14px/1.45 Arial, Helvetica, sans-serif;
     text-align: left;
     color-scheme: light;
   }
@@ -1729,26 +1766,20 @@ const appCss = `
     font-family: inherit;
   }
 
-  .wfm-app button {
-    transition:
-      background-color 140ms ease,
-      border-color 140ms ease;
-  }
-
   .wfm-app button:disabled {
-    opacity: 0.5;
+    opacity: .5;
     cursor: not-allowed;
   }
 
   .wfm-app button:focus-visible,
   .wfm-app input:focus-visible {
-    outline: 3px solid rgba(0, 156, 222, 0.35);
+    outline: 3px solid rgba(0,156,222,.35);
     outline-offset: 2px;
   }
 
   .wfm-container {
     width: 100%;
-    max-width: 1440px;
+    max-width: 1480px;
     margin: 0 auto;
   }
 
@@ -1757,18 +1788,16 @@ const appCss = `
     overflow: hidden;
     margin-bottom: 18px;
     padding: 22px 28px;
-    color: #fff;
+    color: white;
     background: var(--primary);
     border-radius: 14px;
-    box-shadow: 0 4px 16px rgba(0, 111, 158, 0.1);
+    box-shadow: 0 4px 16px rgba(0,111,158,.1);
   }
 
   .app-header::after {
     content: "";
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0 0 0 auto;
     width: 10px;
     background: var(--orange);
   }
@@ -1777,28 +1806,26 @@ const appCss = `
     margin-bottom: 5px;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 1.5px;
+    letter-spacing: 1.4px;
     text-transform: uppercase;
   }
 
   .app-header h1 {
     margin: 0;
-    color: #fff;
+    color: white;
     font-size: 30px;
-    font-weight: 700;
     line-height: 1.15;
   }
 
   .app-header p {
     margin: 6px 0 0;
-    color: #fff;
+    color: white;
     font-size: 15px;
   }
 
   .overview-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    align-items: stretch;
+    grid-template-columns: minmax(0,1fr) minmax(0,1fr);
     gap: 16px;
     margin-bottom: 18px;
   }
@@ -1806,10 +1833,14 @@ const appCss = `
   .panel {
     min-width: 0;
     padding: 20px;
-    background: #fff;
+    background: white;
     border: 1px solid var(--border);
     border-radius: 14px;
-    box-shadow: 0 4px 14px rgba(0, 111, 158, 0.05);
+    box-shadow: 0 4px 14px rgba(0,111,158,.05);
+  }
+
+  .spaced {
+    margin-bottom: 18px;
   }
 
   .section-heading {
@@ -1821,7 +1852,6 @@ const appCss = `
 
   .section-accent {
     flex: 0 0 6px;
-    width: 6px;
     height: 28px;
     background: var(--orange);
     border-radius: 4px;
@@ -1831,7 +1861,6 @@ const appCss = `
     margin: 0;
     color: var(--text);
     font-size: 19px;
-    font-weight: 700;
     line-height: 1.25;
   }
 
@@ -1839,17 +1868,15 @@ const appCss = `
     margin: 4px 0 0;
     color: var(--muted);
     font-size: 12px;
-    line-height: 1.4;
   }
 
   .assumptions-grid,
   .summary-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(3, auto);
+    grid-template-columns: repeat(2,minmax(0,1fr));
+    grid-template-rows: repeat(3,auto);
     grid-auto-flow: column;
-    column-gap: 20px;
-    row-gap: 12px;
+    gap: 12px 20px;
     margin-top: 18px;
   }
 
@@ -1860,8 +1887,7 @@ const appCss = `
     min-width: 0;
   }
 
-  .field-label,
-  .metric-label {
+  .field-label {
     display: block;
     color: var(--text);
     font-size: 12px;
@@ -1883,18 +1909,17 @@ const appCss = `
     margin: 0;
     padding: 0 10px;
     color: var(--text);
-    background: #fff;
+    background: white;
     border: 1px solid var(--border);
     border-radius: 7px;
     font-size: 14px;
-    font-weight: 400;
     line-height: normal;
   }
 
   .unit-input .field-input {
     height: 40px;
     padding: 0 44px 0 12px;
-    background: var(--pale-blue);
+    background: var(--pale);
     font-size: 15px;
   }
 
@@ -1912,20 +1937,16 @@ const appCss = `
     min-width: 0;
   }
 
-  .metric-label {
-    margin-bottom: 6px;
-  }
-
   .metric-value {
     display: flex;
     align-items: center;
     min-height: 40px;
+    margin-top: 6px;
     padding: 7px 12px;
     background: var(--page);
     border: 1px solid #dce7ee;
     border-radius: 8px;
     font-size: 19px;
-    font-weight: 700;
     line-height: 1.2;
     overflow-wrap: anywhere;
     font-variant-numeric: tabular-nums;
@@ -1938,7 +1959,8 @@ const appCss = `
     line-height: 1.3;
   }
 
-  .text-default {
+  .text-default,
+  .text-info {
     color: var(--primary-dark);
   }
 
@@ -1958,9 +1980,8 @@ const appCss = `
     font-weight: 700;
   }
 
-  .interval-panel,
-  .results-panel {
-    margin-bottom: 18px;
+  .muted {
+    color: var(--muted);
   }
 
   .toolbar {
@@ -1986,26 +2007,22 @@ const appCss = `
     min-height: 36px;
     padding: 8px 12px;
     color: var(--primary-dark);
-    background: #fff;
+    background: white;
     border: 1px solid var(--primary);
     border-radius: 7px;
     font-size: 12px;
     font-weight: 600;
     line-height: 1.3;
-    cursor: pointer;
     white-space: nowrap;
+    cursor: pointer;
   }
 
   .action-button:hover:not(:disabled) {
-    background: var(--pale-blue);
+    background: var(--pale);
   }
 
   .action-button.primary {
-    color: #fff;
-    background: var(--primary);
-  }
-
-  .action-button.primary:hover:not(:disabled) {
+    color: white;
     background: var(--primary-dark);
   }
 
@@ -2013,7 +2030,7 @@ const appCss = `
     margin-bottom: 12px;
     padding: 9px 12px;
     color: var(--muted);
-    background: var(--pale-blue);
+    background: var(--pale);
     border: 1px solid var(--border);
     border-radius: 8px;
     font-size: 11px;
@@ -2040,11 +2057,20 @@ const appCss = `
     border-color: #fecdca;
   }
 
+  .result-warning {
+    margin-top: 16px;
+    margin-bottom: 0;
+  }
+
   .table-scroll {
     width: 100%;
     overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: 10px;
+  }
+
+  .section-table {
+    margin-top: 16px;
   }
 
   .data-table {
@@ -2060,18 +2086,34 @@ const appCss = `
     table-layout: fixed;
   }
 
+  .input-table th:nth-child(1) {
+    width: 24%;
+  }
+
+  .input-table th:nth-child(2),
+  .input-table th:nth-child(3) {
+    width: 30%;
+  }
+
+  .input-table th:nth-child(4) {
+    width: 16%;
+  }
+
   .results-table {
-    min-width: 1120px;
+    min-width: 1600px;
+  }
+
+  .hourly-table {
+    min-width: 580px;
   }
 
   .data-table thead {
-    color: #fff;
     background: var(--primary);
   }
 
   .data-table th {
     padding: 12px;
-    color: #fff;
+    color: white;
     border-bottom: 1px solid var(--primary-dark);
     text-align: left;
     font-size: 12px;
@@ -2080,7 +2122,7 @@ const appCss = `
   }
 
   .data-table td {
-    padding: 8px 12px;
+    padding: 9px 12px;
     border-bottom: 1px solid var(--border);
     text-align: left;
     font-size: 13px;
@@ -2095,19 +2137,6 @@ const appCss = `
     border-bottom: 0;
   }
 
-  .input-table th:nth-child(1) {
-    width: 24%;
-  }
-
-  .input-table th:nth-child(2),
-  .input-table th:nth-child(3) {
-    width: 30%;
-  }
-
-  .input-table th:nth-child(4) {
-    width: 16%;
-  }
-
   .remove-button {
     min-height: 34px;
     padding: 7px 11px;
@@ -2118,18 +2147,6 @@ const appCss = `
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
-  }
-
-  .remove-button:hover:not(:disabled) {
-    background: #fee4e2;
-  }
-
-  .results-panel > .section-heading {
-    margin-bottom: 16px;
-  }
-
-  .interval-time {
-    color: var(--primary-dark);
   }
 
   .status-badge {
@@ -2155,19 +2172,21 @@ const appCss = `
     background: var(--amber-bg);
   }
 
-  .badge-info {
+  .badge-info,
+  .badge-default {
     color: var(--primary-dark);
-    background: var(--pale-blue);
+    background: var(--pale);
   }
 
   .footnote {
     margin: 12px 0 0;
     color: var(--muted);
     font-size: 11px;
+    line-height: 1.5;
   }
 
   .decision-panel {
-    background: var(--pale-blue);
+    background: var(--pale);
     border-left: 6px solid var(--orange);
   }
 
@@ -2180,30 +2199,7 @@ const appCss = `
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-top: 14px;
-  }
-
-  .risk-time {
-    padding: 6px 11px;
-    color: #fff;
-    background: #b85c00;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .risk-time.critical {
-    background: var(--red);
-  }
-
-  .empty-state {
-    margin-bottom: 18px;
-    color: var(--muted);
-    text-align: center;
-  }
-
-  .empty-state p {
-    margin-bottom: 0;
+    margin-top: 12px;
   }
 
   .copilot-floating {
@@ -2215,11 +2211,11 @@ const appCss = `
     align-items: center;
     gap: 9px;
     padding: 13px 18px;
-    color: #fff;
+    color: white;
     background: var(--primary-dark);
-    border: 2px solid #fff;
+    border: 2px solid white;
     border-radius: 999px;
-    box-shadow: 0 8px 24px rgba(0, 111, 158, 0.25);
+    box-shadow: 0 8px 24px rgba(0,111,158,.25);
     font-size: 13px;
     font-weight: 700;
     cursor: pointer;
@@ -2229,20 +2225,18 @@ const appCss = `
     position: fixed;
     inset: 0;
     z-index: 1001;
-    background: rgba(22, 50, 71, 0.3);
+    background: rgba(22,50,71,.3);
   }
 
   .copilot-panel {
     position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0 0 0 auto;
     z-index: 1002;
     display: flex;
     flex-direction: column;
-    width: min(440px, 100vw);
-    background: #fff;
-    box-shadow: -12px 0 35px rgba(22, 50, 71, 0.22);
+    width: min(440px,100vw);
+    background: white;
+    box-shadow: -12px 0 35px rgba(22,50,71,.22);
   }
 
   .copilot-header {
@@ -2251,23 +2245,15 @@ const appCss = `
     justify-content: space-between;
     gap: 12px;
     padding: 20px;
-    color: #fff;
+    color: white;
     background: var(--primary-dark);
     border-right: 8px solid var(--orange);
   }
 
   .copilot-header h2 {
     margin: 0;
-    color: #fff;
+    color: white;
     font-size: 20px;
-  }
-
-  .copilot-eyebrow {
-    margin-bottom: 4px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
   }
 
   .copilot-close {
@@ -2275,9 +2261,9 @@ const appCss = `
     width: 36px;
     height: 36px;
     padding: 0;
-    color: #fff;
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: white;
+    background: rgba(255,255,255,.15);
+    border: 1px solid rgba(255,255,255,.4);
     border-radius: 50%;
     font-size: 24px;
     cursor: pointer;
@@ -2290,9 +2276,8 @@ const appCss = `
     padding: 20px;
   }
 
-  .copilot-description {
-    margin: 0 0 18px;
-    color: var(--muted);
+  .copilot-body > p {
+    margin-top: 0;
     font-size: 13px;
     line-height: 1.6;
   }
@@ -2300,7 +2285,7 @@ const appCss = `
   .copilot-actions {
     display: grid;
     gap: 10px;
-    margin-bottom: 20px;
+    margin: 18px 0;
   }
 
   .copilot-actions .action-button {
@@ -2312,8 +2297,7 @@ const appCss = `
 
   .copilot-response {
     padding: 16px;
-    color: var(--text);
-    background: var(--pale-blue);
+    background: var(--pale);
     border: 1px solid var(--border);
     border-left: 5px solid var(--orange);
     border-radius: 10px;
@@ -2347,7 +2331,7 @@ const appCss = `
 
   @media (max-width: 980px) {
     .overview-grid {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(0,1fr);
     }
 
     .toolbar {
@@ -2402,3 +2386,4 @@ const appCss = `
 `;
 
 export default App;
+``
