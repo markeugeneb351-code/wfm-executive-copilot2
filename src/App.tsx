@@ -42,12 +42,7 @@ interface NumberInputProps {
   ariaLabel: string;
 }
 
-interface SummaryMetricProps {
-  label: string;
-  value: string;
-  helper: string;
-  tone?: "default" | "positive" | "warning" | "negative";
-}
+type MetricTone = "default" | "positive" | "warning" | "negative";
 
 type EditableIntervalField =
   | "interval"
@@ -85,13 +80,10 @@ function normalizeInterval(value: string) {
 
 function signedNumber(value: number, decimals = 2) {
   const rounded = Number(value.toFixed(decimals));
+
   return `${rounded > 0 ? "+" : ""}${rounded.toFixed(decimals)}`;
 }
 
-/**
- * Parses comma-separated records, including quoted commas, escaped quotes,
- * and line breaks inside quoted fields.
- */
 function parseCsv(text: string): string[][] {
   const records: string[][] = [];
   let record: string[] = [];
@@ -142,6 +134,7 @@ function parseCsv(text: string): string[][] {
   }
 
   finishRecord();
+
   return records;
 }
 
@@ -186,6 +179,7 @@ function downloadCsv(
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const nextRowId = useRef(5);
+
   const copilotQuestionRef = useRef<HTMLInputElement>(null);
   const copilotTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -204,6 +198,7 @@ function App() {
 
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [copilotQuestion, setCopilotQuestion] = useState("");
+
   const [copilotResponse, setCopilotResponse] = useState(
     "Select a quick action or enter a workforce question."
   );
@@ -217,15 +212,25 @@ function App() {
         intervalMinutes < 1 ||
         intervalMinutes > 1440
       ) {
-        throw new Error("Interval minutes must be between 1 and 1440.");
+        throw new Error(
+          "Interval minutes must be a whole number between 1 and 1440."
+        );
       }
 
+      const assumptions = [
+        targetSLA,
+        answerTime,
+        ahtSeconds,
+        shrinkage,
+        maximumOccupancy,
+      ];
+
       if (
-        !Number.isFinite(ahtSeconds) ||
+        !assumptions.every(Number.isFinite) ||
         ahtSeconds <= 0 ||
         targetSLA <= 0 ||
         targetSLA >= 100 ||
-        answerTime < 0 ||
+        answerTime < 1 ||
         shrinkage < 0 ||
         shrinkage >= 100 ||
         maximumOccupancy <= 0 ||
@@ -275,7 +280,7 @@ function App() {
           maximumOccupancy: maximumOccupancy / 100,
         });
 
-        const requiredValues = [
+        const numericResults = [
           result.offeredLoad,
           result.requiredProductiveAgents,
           result.requiredScheduledFTE,
@@ -284,7 +289,7 @@ function App() {
           result.fteGap,
         ];
 
-        if (!requiredValues.every(Number.isFinite)) {
+        if (!numericResults.every(Number.isFinite)) {
           throw new Error(
             `${interval}: The calculation returned an invalid numeric result.`
           );
@@ -338,11 +343,6 @@ function App() {
   ]);
 
   const calculatedIntervals = calculation.results;
-
-  const resultsById = useMemo(
-    () => new Map(calculatedIntervals.map((row) => [row.id, row])),
-    [calculatedIntervals]
-  );
 
   const summary = useMemo(() => {
     if (calculatedIntervals.length === 0) {
@@ -411,38 +411,42 @@ function App() {
     }
 
     const previousOverflow = document.body.style.overflow;
+
     document.body.style.overflow = "hidden";
     copilotQuestionRef.current?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setCopilotOpen(false);
+        return;
       }
 
-      if (event.key === "Tab") {
-        const panel = document.getElementById("workforce-copilot-panel");
+      if (event.key !== "Tab") {
+        return;
+      }
 
-        const focusable = panel?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), [tabindex="0"]'
-        );
+      const panel = document.getElementById("workforce-copilot-panel");
 
-        if (!focusable?.length) {
-          return;
-        }
+      const focusable = panel?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex="0"]'
+      );
 
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
+      if (!focusable?.length) {
+        return;
+      }
 
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (
-          !event.shiftKey &&
-          document.activeElement === last
-        ) {
-          event.preventDefault();
-          first.focus();
-        }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        document.activeElement === last
+      ) {
+        event.preventDefault();
+        first.focus();
       }
     }
 
@@ -482,6 +486,9 @@ function App() {
 
           case "availableFTE":
             return { ...row, availableFTE: Number(value) };
+
+          default:
+            return row;
         }
       })
     );
@@ -499,6 +506,7 @@ function App() {
       try {
         const validTime = normalizeInterval(lastRow.interval);
         const [hours, minutes] = validTime.split(":").map(Number);
+
         const totalMinutes =
           (hours * 60 + minutes + intervalMinutes) % 1440;
 
@@ -555,6 +563,7 @@ function App() {
     );
 
     setErrorMessage("");
+
     setCopilotResponse(
       "Inputs were reset. Enter new workforce data before requesting analysis."
     );
@@ -617,6 +626,7 @@ function App() {
         .slice(1)
         .map((values, index) => {
           const rowNumber = index + 2;
+
           const interval = normalizeInterval(
             values[intervalIndex] ?? ""
           );
@@ -670,6 +680,7 @@ function App() {
       );
 
       setIntervals(importedRows);
+
       setMessage(
         `${importedRows.length} interval row(s) imported successfully.`
       );
@@ -839,7 +850,7 @@ function App() {
     setCopilotQuestion("");
   }
 
-  const riskTone: SummaryMetricProps["tone"] =
+  const riskTone: MetricTone =
     !summary
       ? "default"
       : summary.highestRisk === "Critical" ||
@@ -862,7 +873,7 @@ function App() {
           <p>Intraday Capacity Planner</p>
         </header>
 
-        {/* Assumptions and summary */}
+        {/* LEFT: ASSUMPTIONS | RIGHT: DAILY SUMMARY */}
         <div className="overview-grid">
           <section className="panel">
             <SectionHeading
@@ -893,13 +904,13 @@ function App() {
               </AssumptionField>
 
               <AssumptionField
-                label="ASA Target"
+                label="Answer Target"
                 unit="sec"
-                hint="Used by the existing engine as the SLA answer-time threshold, not a calculated average speed of answer."
+                hint="Answer-time threshold used for the service-level calculation."
               >
                 <NumberInput
                   value={answerTime}
-                  min={0}
+                  min={1}
                   allowDecimal={false}
                   onChange={setAnswerTime}
                   ariaLabel="Service-level answer-time threshold in seconds"
@@ -925,7 +936,7 @@ function App() {
                 />
               </AssumptionField>
 
-              <AssumptionField label="Occupancy" unit="%">
+              <AssumptionField label="Max Occupancy" unit="%">
                 <NumberInput
                   value={maximumOccupancy}
                   min={1}
@@ -1007,7 +1018,7 @@ function App() {
           </section>
         </div>
 
-        {/* Interval inputs with calculated SLA */}
+        {/* DAILY INTERVAL OUTPUTS: NO SLA COLUMN */}
         <section className="panel interval-panel">
           <div className="toolbar">
             <SectionHeading
@@ -1052,8 +1063,8 @@ function App() {
           <div className="help-box">
             CSV headers: <strong>Interval</strong>,{" "}
             <strong>Forecast Volume</strong>,{" "}
-            <strong>Available FTE</strong>. SLA is calculated. Reset
-            retains interval times and assumptions.
+            <strong>Available FTE</strong>. Reset clears workload and
+            staffing while retaining interval times and assumptions.
           </div>
 
           {message && (
@@ -1081,102 +1092,74 @@ function App() {
                   <th scope="col">Interval</th>
                   <th scope="col">Forecast Volume</th>
                   <th scope="col">Available FTE</th>
-                  <th scope="col">SLA</th>
                   <th scope="col">Action</th>
                 </tr>
               </thead>
 
               <tbody>
-                {intervals.map((row, index) => {
-                  const result = resultsById.get(row.id);
+                {intervals.map((row, index) => (
+                  <tr key={row.id}>
+                    <td>
+                      <input
+                        className="field-input"
+                        type="time"
+                        step={60}
+                        value={row.interval}
+                        aria-label={`Interval row ${index + 1}`}
+                        onChange={(event) =>
+                          updateInterval(
+                            row.id,
+                            "interval",
+                            event.target.value
+                          )
+                        }
+                      />
+                    </td>
 
-                  const meetsTarget =
-                    result !== undefined &&
-                    result.projectedSLA >= targetSLA / 100;
+                    <td>
+                      <NumberInput
+                        value={row.forecastVolume}
+                        min={0}
+                        allowDecimal={false}
+                        onChange={(value) =>
+                          updateInterval(
+                            row.id,
+                            "forecastVolume",
+                            value
+                          )
+                        }
+                        ariaLabel={`Forecast volume row ${index + 1}`}
+                      />
+                    </td>
 
-                  return (
-                    <tr key={row.id}>
-                      <td>
-                        <input
-                          className="field-input"
-                          type="time"
-                          step={60}
-                          value={row.interval}
-                          aria-label={`Interval row ${index + 1}`}
-                          onChange={(event) =>
-                            updateInterval(
-                              row.id,
-                              "interval",
-                              event.target.value
-                            )
-                          }
-                        />
-                      </td>
+                    <td>
+                      <NumberInput
+                        value={row.availableFTE}
+                        min={0}
+                        onChange={(value) =>
+                          updateInterval(
+                            row.id,
+                            "availableFTE",
+                            value
+                          )
+                        }
+                        ariaLabel={`Available FTE row ${index + 1}`}
+                      />
+                    </td>
 
-                      <td>
-                        <NumberInput
-                          value={row.forecastVolume}
-                          min={0}
-                          allowDecimal={false}
-                          onChange={(value) =>
-                            updateInterval(
-                              row.id,
-                              "forecastVolume",
-                              value
-                            )
-                          }
-                          ariaLabel={`Forecast volume row ${index + 1}`}
-                        />
-                      </td>
-
-                      <td>
-                        <NumberInput
-                          value={row.availableFTE}
-                          min={0}
-                          onChange={(value) =>
-                            updateInterval(
-                              row.id,
-                              "availableFTE",
-                              value
-                            )
-                          }
-                          ariaLabel={`Available FTE row ${index + 1}`}
-                        />
-                      </td>
-
-                      <td>
-                        <output
-                          className={`sla-output ${
-                            result
-                              ? meetsTarget
-                                ? "sla-positive"
-                                : "sla-negative"
-                              : ""
-                          }`}
-                          aria-label={`Projected SLA row ${index + 1}`}
-                        >
-                          {result
-                            ? `${(
-                                result.projectedSLA * 100
-                              ).toFixed(1)}%`
-                            : "—"}
-                        </output>
-                      </td>
-
-                      <td>
-                        <button
-                          type="button"
-                          className="remove-button"
-                          disabled={intervals.length === 1}
-                          aria-label={`Remove interval ${row.interval}`}
-                          onClick={() => removeInterval(row.id)}
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                    <td>
+                      <button
+                        type="button"
+                        className="remove-button"
+                        disabled={intervals.length === 1}
+                        aria-label={`Remove interval ${row.interval}`}
+                        onClick={() => removeInterval(row.id)}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -1191,7 +1174,7 @@ function App() {
 
         {summary && (
           <>
-            {/* Detailed results */}
+            {/* DETAILED RESULTS: SLA RETAINED */}
             <section className="panel results-panel">
               <SectionHeading
                 title="Interval Capacity Results"
@@ -1288,12 +1271,11 @@ function App() {
               </div>
 
               <p className="footnote">
-                Risk uses the existing staffing-gap and occupancy
-                rules. Review projected SLA separately.
+                Risk uses staffing-gap and occupancy rules. Review
+                projected SLA separately.
               </p>
             </section>
 
-            {/* Executive decision */}
             <section className="panel decision-panel">
               <SectionHeading
                 title="Executive Decision"
@@ -1368,7 +1350,7 @@ function App() {
         )}
       </div>
 
-      {/* Local Copilot preview */}
+      {/* LOCAL COPILOT PREVIEW */}
       <button
         ref={copilotTriggerRef}
         type="button"
@@ -1417,9 +1399,9 @@ function App() {
 
             <div className="copilot-body">
               <p className="copilot-description">
-                This is a rule-based local preview using the
-                dashboard results. It is not connected to Microsoft
-                Copilot or an external AI service.
+                This is a rule-based local preview using dashboard
+                results. It is not connected to an external AI
+                service.
               </p>
 
               <div className="copilot-actions">
@@ -1633,7 +1615,12 @@ function SummaryMetric({
   value,
   helper,
   tone = "default",
-}: SummaryMetricProps) {
+}: {
+  label: string;
+  value: string;
+  helper: string;
+  tone?: MetricTone;
+}) {
   return (
     <div className="summary-metric">
       <div className="metric-label">{label}</div>
@@ -1682,6 +1669,26 @@ function StatusBadge({
 /* -------------------------------------------------------------------------- */
 
 const appCss = `
+  /* Override starter-page constraints so the dashboard can use full width. */
+  html {
+    min-width: 320px;
+    background: #f4fafd;
+  }
+
+  body {
+    display: block;
+    min-width: 320px;
+    margin: 0;
+  }
+
+  #root {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    text-align: left;
+  }
+
   .wfm-app {
     --primary: #009cde;
     --primary-dark: #006f9e;
@@ -1725,8 +1732,7 @@ const appCss = `
   .wfm-app button {
     transition:
       background-color 140ms ease,
-      border-color 140ms ease,
-      box-shadow 140ms ease;
+      border-color 140ms ease;
   }
 
   .wfm-app button:disabled {
@@ -2050,7 +2056,8 @@ const appCss = `
   }
 
   .input-table {
-    min-width: 700px;
+    min-width: 620px;
+    table-layout: fixed;
   }
 
   .results-table {
@@ -2089,44 +2096,16 @@ const appCss = `
   }
 
   .input-table th:nth-child(1) {
-    width: 19%;
+    width: 24%;
   }
 
   .input-table th:nth-child(2),
   .input-table th:nth-child(3) {
-    width: 27%;
+    width: 30%;
   }
 
   .input-table th:nth-child(4) {
-    width: 14%;
-  }
-
-  .input-table th:nth-child(5) {
-    width: 13%;
-  }
-
-  .sla-output {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 76px;
-    min-height: 34px;
-    padding: 0 10px;
-    color: var(--muted);
-    background: var(--page);
-    border-radius: 7px;
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  .sla-positive {
-    color: var(--green);
-    background: var(--green-bg);
-  }
-
-  .sla-negative {
-    color: var(--red);
-    background: var(--red-bg);
+    width: 16%;
   }
 
   .remove-button {
