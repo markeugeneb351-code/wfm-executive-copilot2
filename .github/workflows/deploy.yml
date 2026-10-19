@@ -1,4 +1,4 @@
-name: Deploy WFM Tool to GitHub Pages
+name: Deploy Vite app to GitHub Pages
 
 on:
   push:
@@ -12,19 +12,18 @@ permissions:
   id-token: write
 
 concurrency:
-  group: github-pages
+  group: pages
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build WFM Application
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -39,13 +38,12 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload production site
+      - name: Upload production build
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
 
   deploy:
-    name: Deploy WFM Application
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
